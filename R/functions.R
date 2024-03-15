@@ -214,7 +214,6 @@ parse_stan_blocks <- function(stan_code) {
   return(blocks)
 }
 
-
 parse_declaration <- function(line) {
   # Initialize variables to store extracted information
   declaration_type <- ""
@@ -222,40 +221,45 @@ parse_declaration <- function(line) {
   bounds <- ""
   dimensions <- ""
   distribution <- NA  # Not applicable for declaration lines
-  parameters <- NA         # Not applicable for declaration lines
+  parameters <- NA    # Not applicable for declaration lines
   
   # Regular expressions for different variable types
-  scalar_regex <- "^(int|real)\\s*(<[^>]*>)?\\s+(\\w+);"
-  vector_regex <- "^(vector|row_vector)\\[(.+)\\]\\s+(\\w+);"
-  matrix_regex <- "^matrix\\[(.+)\\]\\s+(\\w+);"
-  array_regex <- "^array\\[(.+)\\]\\s+(int|real)\\s*(<[^>]*>)?\\s+(\\w+);"
+  # Updated regex to ensure bounds are captured correctly without angle brackets
+  scalar_regex <- "^(int|real)\\s*(<([^>]*)>)?\\s+(\\w+);$"
+  vector_regex <- "^(vector|row_vector)(<([^>]*)>)?\\[(.+)\\]\\s+(\\w+);$"
+  matrix_regex <- "^matrix(<([^>]*)>)?\\[(.+)\\]\\s+(\\w+);$"
+  array_regex <- "^array\\[(.+)\\]\\s+(int|real)\\s*(<([^>]*)>)?\\s+(\\w+);$"
   
   # Check and extract information for scalar types
   if (grepl(scalar_regex, line)) {
     declaration_type <- sub(scalar_regex, "\\1", line)
-    bounds <- sub(scalar_regex, "\\2", line)
-    var_name <- sub(scalar_regex, "\\3", line)
-    dimensions <- "1"  # Scalar
+    bounds <- sub(scalar_regex, "\\3", line)  # Captures contents within angle brackets
+    var_name <- sub(scalar_regex, "\\4", line)
+    dimensions <- "1"  # Scalars have a dimension of 1
+  } else if (grepl(vector_regex, line)) {  # Vector types
+    declaration_type <- sub(vector_regex, "\\1", line) 
+    bounds <- sub(vector_regex, "\\3", line)  # Updated to capture bounds correctly          
+    dimensions <- sub(vector_regex, "\\4", line)      
+    var_name <- sub(vector_regex, "\\5", line)        
+  } else if (grepl(matrix_regex, line)) { 
+    declaration_type <- "matrix"
+    bounds <- sub(matrix_regex, "\\2", line)  
+    dimensions <- sub(matrix_regex, "\\3", line)
+    var_name <- sub(matrix_regex, "\\4", line) 
+  } else if (grepl(array_regex, line)) {
+    declaration_type <- sub(array_regex, "\\2", line)  
+    dimensions <- sub(array_regex, "\\1", line) 
+    bounds <- sub(array_regex, "\\4", line) 
+    var_name <- sub(array_regex, "\\5", line)
   }
   
-  # Check and extract information for vector types
-  else if (grepl(vector_regex, line)) {
-    declaration_type <- sub(vector_regex, "\\1", line)
-    dimensions <- sub(vector_regex, "\\2", line)
-    var_name <- sub(vector_regex, "\\3", line)
-  }
-  # Check and extract information for matrix types
-  else if (grepl(matrix_regex, line)) {
-    declaration_type <- "matrix"
-    dimensions <- sub(matrix_regex, "\\1", line)
-    var_name <- sub(matrix_regex, "\\2", line)
-  }
-  # Check and extract information for array types
-  else if (grepl(array_regex, line)) {
-    declaration_type <- sub(array_regex, "\\2", line)
-    dimensions <- sub(array_regex, "\\1", line)
-    bounds <- sub(array_regex, "\\3", line)
-    var_name <- sub(array_regex, "\\4", line)
+  #add in explicit bounds if necessary
+  if (bounds == "") {
+    bounds <- "lower=-Inf, upper=Inf"
+  } else if (!grepl("upper", bounds)) {
+    bounds <- paste0(bounds, ", upper=Inf")
+  } else if (!grepl("lower", bounds)) {
+    bounds <- paste0("lower=-Inf, ", bounds)
   }
   
   return(list(declaration_type = declaration_type, var_name = var_name, bounds = bounds, dimensions = dimensions, distribution = distribution, parameters = parameters))
@@ -568,6 +572,7 @@ interpret_operation <- function(stan_expression) {
   # Ignore certain functions if needed, e.g., to_vector (if it's redundant in R)
   # This can be a no-op if to_vector has no side effects in R context
   stan_expression <- gsub("to_vector\\(", "(", stan_expression)
+  stan_expression <- gsub("rep_vector\\(", "rep\\(", stan_expression)
   
   # Return the translated stan_expression
   return(stan_expression)
@@ -658,40 +663,153 @@ interpret_sampling <- function(line, dat, samps, sample_index = 1, post_pred_sim
   }
 }
 
+distribution_maps <- function(type = c("r", "q", "p", "d")[1]){
+  if(type == "p"){
+    return(list(
+      std_normal = "pnorm(bound, mean = 0, sd = 1)",
+      normal = "pnorm(bound, mean = param1, sd = param2)",  # Assuming 'mean, sd' parameterization
+      beta = "pbeta(bound, shape1 = param1, shape2 = param2)",
+      binomial = "pbinom(bound, size = param1, prob = param2)",
+      gamma = "pgamma(bound, shape = param1, rate = param2)",  # Assuming 'shape, rate' parameterization
+      student_t = "pt(bound, df = param1, ncp = param2)",
+      double_exponential = "plaplace(bound, location = param1, scale = param2)",  # Note: plaplace may not be directly available in base R
+      exponential = "pexp(bound, rate = param1)",
+      lognormal = "plnorm(bound, meanlog = param1, sdlog = param2)",
+      chi_square = "pchisq(bound, df = param1)",
+      uniform = "punif(bound, min = param1, max = param2)",
+      poisson = "ppois(bound, lambda = param1)",
+      beta_binomial = "extraDistr::pbetabinom(bound, size = param1, prob = param2, prob2 = param3)"  # Note: pbetabinom may not be directly available as named; placeholder for conceptual use
+      # Add other distributions as needed
+    ))
+  } else if(type == "q"){
+    return(list(
+      std_normal = "qnorm(target_quantile, mean = 0, sd = 1)",
+      normal = "qnorm(target_quantile, mean = param1, sd = param2)",
+      beta = "qbeta(target_quantile, shape1 = param1, shape2 = param2)",
+      binomial = "qbinom(target_quantile, size = param1, prob = param2)",
+      gamma = "qgamma(target_quantile, shape = param1, rate = param2)",
+      student_t = "qt(target_quantile, df = param1, ncp = param2)",
+      exponential = "qexp(target_quantile, rate = param1)",
+      lognormal = "qlnorm(target_quantile, meanlog = param1, sdlog = param2)",
+      chi_square = "qchisq(target_quantile, df = param1)",
+      uniform = "qunif(target_quantile, min = param1, max = param2)",
+      poisson = "qpois(target_quantile, lambda = param1)",
+      double_exponential = "qaplace(target_quantile, location = param1, scale = param2)",
+      beta_binomial = "extraDistr::qbbinom(target_quantile, size = param1, alpha = param2, beta = param3)"
+      # Add other distributions as needed
+    ))
+  } else if(type == "r"){
+    return(list(
+      std_normal = "rnorm(n = lhs_dim, mean = 0, sd = 1)",
+      normal = "rnorm(n = lhs_dim, mean = param1, sd = param2)",  # Assuming 'mean, sd' parameterization
+      beta = "rbeta(n = lhs_dim, shape1 = param1, shape2 = param2)",
+      binomial = "rbinom(n = lhs_dim, size = param1, prob = param2)",
+      gamma = "rgamma(n = lhs_dim, shape = param1, rate = param2)",  # Assuming 'shape, rate' parameterization
+      student_t = "rt(n = lhs_dim, df = param1, ncp = param2)",
+      double_exponential = "rlaplace(n = lhs_dim, location = param1, scale = param2)",
+      exponential = "rexp(n = lhs_dim, rate = param1)",
+      lognormal = "rlnorm(n = lhs_dim, meanlog = param1, sdlog = param2)",
+      chi_square = "rchisq(n = lhs_dim, df = param1)",
+      uniform = "runif(n = lhs_dim, min = param1, max = param2)",
+      poisson = "rpois(n = lhs_dim, lambda = param1)",
+      beta_binomial = "extraDistr::rbbinom(n = lhs_dim, size = param1, alpha = param2, beta = param3)"
+      # Add other distributions as needed
+    ))
+  } else if(type == "d"){
+    return(list(
+      normal = "dnorm(x = dat$VAR_NAME, mean = param1, sd = param2)",
+      beta = "dbeta(x = dat$VAR_NAME, shape1 = param1, shape2 = param2)",
+      binomial = "dbinom(x = dat$VAR_NAME, size = param1, prob = param2)",
+      gamma = "dgamma(x = dat$VAR_NAME, shape = param1, rate = param2)",
+      student_t = "dt(x = dat$VAR_NAME, df = param1, ncp = param2)",
+      double_exponential = "dexp(x = dat$VAR_NAME, rate = param1)",  # Assuming 'rate' parameterization
+      exponential = "dexp(x = dat$VAR_NAME, rate = param1)",
+      lognormal = "dlnorm(x = dat$VAR_NAME, meanlog = param1, sdlog = param2)",
+      chi_square = "dchisq(x = dat$VAR_NAME, df = param1)",
+      uniform = "dunif(x = dat$VAR_NAME, min = param1, max = param2)",
+      poisson = "dpois(x = dat$VAR_NAME, lambda = param1)",
+      beta_binomial = "extraDistr::dbbinom(x = dat$VAR_NAME, size = param1, alpha = param2, beta = param3)"
+      # Add other distributions as needed
+    ))
+  }
+}
+
 generate_sampling_code <- function(line) {
   distribution <- line$distribution
   parameters <- line$parameters
-  
-  # Mapping Stan distributions to R functions
-  distribution_map <- list(
-    std_normal = "rnorm(n = 1, mean = 0, sd = 1)",
-    normal = "rnorm(n = 1, mean = param1, sd = param2)",  # Assuming 'mean, sd' parameterization
-    beta = "rbeta(n = 1, shape1 = param1, shape2 = param2)",
-    binomial = "rbinom(n = 1, size = param1, prob = param2)",
-    gamma = "rgamma(n = 1, shape = param1, rate = param2)",  # Assuming 'shape, rate' parameterization
-    student_t = "rt(n = 1, df = param1, ncp = param2)",
-    double_exponential = "rlaplace(n = 1, location = param1, scale = param2)",
-    exponential = "rexp(n = 1, rate = param1)",
-    lognormal = "rlnorm(n = 1, meanlog = param1, sdlog = param2)",
-    chi_square = "rchisq(n = 1, df = param1)",
-    uniform = "runif(n = 1, min = param1, max = param2)",
-    poisson = "rpois(n = 1, lambda = param1)",
-    beta_binomial = "extraDistr::rbbinom(n = 1, size = param1, alpha = param2, beta = param3)"
-    # Add other distributions as needed
-  )
-  
-  # Generate R code for sampling
-  r_function <- distribution_map[[distribution]]
-  if (is.null(r_function)) {
-    return(paste("# No R equivalent for", distribution, "distribution"))
-  } else {
-    # Replace placeholders with actual parameters
-    param_names <- paste0("param", seq_along(strsplit(parameters, ",")[[1]]))
-    for (i in seq_along(param_names)) {
-      r_function <- gsub(param_names[i], strsplit(parameters, ",")[[1]][i], r_function)
-    }
-    return(r_function)
+  param_names <- paste0("param", seq_along(strsplit(parameters, ",")[[1]]))
+  dimensions <- line$dimensions
+  if(is.na(dimensions) | dimensions == ""){
+    dimensions <- 1
+  } else if(!(is.na(line$lhs_index) | line$lhs_index == "")){
+    dimensions <- paste0("prod(dim(", line$var_name, ")")
   }
+  
+  #check if bounds exist
+  bounded <- F
+  if((line$lower_bound != "-Inf" || line$upper_bound != "Inf") & 
+     distribution %in% c("normal", "beta", "gamma", "exponential", "lognormal", "chi_square", "uniform", "poisson", "std_normal")){
+    bounded <- T
+    lb <- line$lower_bound
+    ub <- line$upper_bound
+  }
+  
+  if(bounded){
+    # Mapping Stan distributions to R functions for evaluating upper and lower bounds
+    p_distribution_map <- distribution_maps("p")
+    
+    #evaluate quantiles of bounds
+    ub_code <- p_distribution_map[[distribution]]
+    lb_code <- p_distribution_map[[distribution]]
+    if(parameters != ""){
+      for (i in seq_along(param_names)) {
+        ub_code <- gsub(param_names[i], strsplit(parameters, ",")[[1]][i], ub_code)
+        lb_code <- gsub(param_names[i], strsplit(parameters, ",")[[1]][i], lb_code)
+      }  
+    }
+    ub_code <- gsub("bound", ub, ub_code)
+    lb_code <- gsub("bound", lb, lb_code)
+    bounds_diff_code <- paste0("(", ub_code, " - ", lb_code, ")")
+    
+    #execute inverse transform sampling -- first find the target quantile
+    uniform_sample_code <- paste0("runif(n = ", dimensions, ", min = 0, max = 1)")
+    target_quantile_code <- paste0(lb_code, " + ", bounds_diff_code, " * ", uniform_sample_code)
+    
+    #now find where this quantile falls in the target distribution
+    q_distribution_map <- distribution_maps("q")
+    
+    inverse_transform_code <- q_distribution_map[[distribution]]
+    if(parameters != ""){
+      for (i in seq_along(param_names)) {
+        inverse_transform_code <- gsub(param_names[i], strsplit(parameters, ",")[[1]][i], inverse_transform_code)
+        inverse_transform_code <- gsub(param_names[i], strsplit(parameters, ",")[[1]][i], inverse_transform_code)
+      }
+    }
+    inverse_transform_code <- gsub("target_quantile", target_quantile_code, inverse_transform_code)
+    
+    
+    # Combine the codes to sample within bounds and transform back
+    r_function <- inverse_transform_code
+    return(r_function)
+    
+  } else {
+    # Mapping Stan distributions to R functions for random number gen
+    r_distribution_map <- distribution_maps("r")
+    
+    # Generate R code for sampling
+    r_function <- r_distribution_map[[distribution]]
+    if (is.null(r_function)) {
+      return(paste("# No R equivalent for", r_distribution_map, "distribution"))
+    } else {
+      # Replace placeholders with actual parameters
+      for (i in seq_along(param_names)) {
+        r_function <- gsub(param_names[i], strsplit(parameters, ",")[[1]][i], r_function)
+      }
+      r_function <- gsub("lhs_dim", dimensions, r_function)
+      return(r_function)
+    }
+  }
+  
 }
 
 
@@ -699,26 +817,19 @@ generate_density_code <- function(line, dat) {
   distribution <- line$distribution
   parameters <- line$parameters
   var_name <- line$var_name
+  bounded <- F
+  if((line$lower_bound != "-Inf" || line$upper_bound != "Inf") & 
+     distribution %in% c("normal", "beta", "gamma", "exponential", "lognormal", "chi_square", "uniform", "poisson", "std_normal")){
+    bounded <- T
+    lb <- line$lower_bound
+    ub <- line$upper_bound
+  }
   
   # Mapping Stan distributions to R density/mass functions
-  density_map <- list(
-    normal = "dnorm(x = dat$VAR_NAME, mean = param1, sd = param2)",
-    beta = "dbeta(x = dat$VAR_NAME, shape1 = param1, shape2 = param2)",
-    binomial = "dbinom(x = dat$VAR_NAME, size = param1, prob = param2)",
-    gamma = "dgamma(x = dat$VAR_NAME, shape = param1, rate = param2)",
-    student_t = "dt(x = dat$VAR_NAME, df = param1, ncp = param2)",
-    double_exponential = "dexp(x = dat$VAR_NAME, rate = param1)",  # Assuming 'rate' parameterization
-    exponential = "dexp(x = dat$VAR_NAME, rate = param1)",
-    lognormal = "dlnorm(x = dat$VAR_NAME, meanlog = param1, sdlog = param2)",
-    chi_square = "dchisq(x = dat$VAR_NAME, df = param1)",
-    uniform = "dunif(x = dat$VAR_NAME, min = param1, max = param2)",
-    poisson = "dpois(x = dat$VAR_NAME, lambda = param1)",
-    beta_binomial = "extraDistr::dbbinom(x = dat$VAR_NAME, size = param1, alpha = param2, beta = param3)"
-    # Add other distributions as needed
-  )
+  d_distribution_map <- distribution_maps("d")
   
   # Generate R code for density/mass calculation
-  r_function <- density_map[[distribution]]
+  r_function <- d_distribution_map[[distribution]]
   if (is.null(r_function)) {
     return(paste("# No R equivalent for", distribution, "distribution"))
   } else {
@@ -730,6 +841,26 @@ generate_density_code <- function(line, dat) {
     
     # Replace placeholder random variable name with actual random variable name
     r_function <- gsub("VAR_NAME", var_name, r_function)
+    
+    #transform density or mass to respect bounds (ie, multiply by the total slice of probability in the distribution)
+    if(bounded){
+      p_distribution_map <- distribution_maps("p")
+      
+      #evaluate quantiles of bounds
+      ub_code <- p_distribution_map[[distribution]]
+      lb_code <- p_distribution_map[[distribution]]
+      if(parameters != ""){
+        for (i in seq_along(param_names)) {
+          ub_code <- gsub(param_names[i], strsplit(parameters, ",")[[1]][i], ub_code)
+          lb_code <- gsub(param_names[i], strsplit(parameters, ",")[[1]][i], lb_code)
+        }  
+      }
+      ub_code <- gsub("bound", ub, ub_code)
+      lb_code <- gsub("bound", lb, lb_code)
+      bounds_diff_code <- paste0("(", ub_code, " - ", lb_code, ")")
+      
+      r_function <- paste0("(", r_function, ") / ", bounds_diff_code)
+    }
     
     return(r_function)
   }
@@ -936,10 +1067,96 @@ interpret_lines <- function(line, dat, samps, sample_index, post_pred_sim, sim) 
 
 #### composite functions ####
 
-retrieve_inputs <- function(stan_code){
+retrieve_block_objects <- function(stan_code, block = c("data", 
+                                                             "transformed data", 
+                                                             "parameters", 
+                                                             "transformed parameters", 
+                                                             "model")[1],
+                                      type = "declaration"){
   block_contents <- parse_stan_blocks(clean_stan(stan_code))
-  parsed_data_lines <- lapply(block_contents["data"], parse_stan_lines)
-  parsed_data_lines$data[,c("var_name", "declaration_type", "bounds")]
+  parsed_data_lines <- lapply(block_contents[block], parse_stan_lines)
+  parsed_data_lines[[block]][parsed_data_lines[[block]]$type == type, 
+                             c("var_name", "declaration_type", "bounds")]
+}
+
+loop_over_param <- function(var_name, dims, set_as = 1) {
+  # Splitting the dimension string into components and trimming any whitespace
+  dim_components <- trimws(strsplit(dims, ",")[[1]])
+  
+  # Initializing variables to build the for-loop string
+  loop_start <- ""
+  loop_end <- ""
+  indent_level <- ""
+  
+  # Building the loop structure dynamically based on the number of dimensions
+  for (i in seq_along(dim_components)) {
+    # Creating the variable index name
+    index_var <- paste0(var_name, "_i_", i)
+    # Adding to the start of the loop string (opening for-loops)
+    loop_start <- paste0(loop_start, indent_level, "for(", index_var, " in 1:", dim_components[i], "){\n")
+    # Preparing the end of the loop string (closing braces)
+    loop_end <- paste0(indent_level, "}\n", loop_end)
+    # Increasing the indent for the next level of nesting
+    indent_level <- paste0(indent_level, " ")
+  }
+  
+  # Constructing the assignment line with the appropriate indentation
+  index_vars <- paste0(var_name, "_i_", seq_along(dim_components), collapse = ", ")
+  assignment_line <- paste0(indent_level, var_name, "[", index_vars, "] = ", set_as, ";\n")
+  
+  # Combining all parts to form the complete loop structure
+  loop_code <- paste0(loop_start, assignment_line, loop_end)
+  
+  return(loop_code)
+}
+
+
+flatten_model <- function(stan_code, scale_identifier = "sd_", set_as = 1){
+  #this function parses a Stan model, identifies scale parameters,
+  #and sets them all to 1 (or whatever is in <set_as>), instead of sampling
+  
+  #some basic pre-processing
+  block_contents <- parse_stan_blocks(clean_stan(stan_code))
+  block_contents <- block_contents[sapply(block_contents, length) > 0]
+  parsed_lines <- lapply(block_contents, parse_stan_lines)
+  all_params <- data.frame(name = parsed_lines$parameters$var_name, 
+                           dim = parsed_lines$parameters$dimensions)
+  
+  #ID lines to modify
+  scale_declaration_inds <- grepl(pattern = scale_identifier, all_params$name) &
+    parsed_lines$parameters$type == "declaration"  
+  scale_params <- all_params[scale_declaration_inds,]
+  scale_sampling_inds <- parsed_lines$model$type == "sampling" & 
+    parsed_lines$model$var_name %in% scale_params$name
+  
+  #create modified lines
+  new_declarations <- character(length(scale_params$name))
+  new_declarations[scale_params$dim == "1"] <- paste0(scale_params$name, " = ", set_as, ";")
+  if(any(scale_params$dim != "1")){
+    new_declarations[scale_params$dim != "1"] <- sapply(which(scale_params$dim != "1"), function(flpi){
+      loop_over_param(var_name = scale_params$name[flpi], dims = scale_params$dim[flpi], set_as = set_as)
+    })  
+  }
+  constrain_free_declarations <- gsub("<[^>]*>", "", parsed_lines$parameters$line[scale_declaration_inds])
+  new_declarations <- paste0(constrain_free_declarations, "\n",
+                             new_declarations)
+  
+  
+  #integrate into the original program
+  new_lines <- parsed_lines
+  new_lines$parameters$line[scale_declaration_inds] <- paste0("// ", 
+                                                              new_lines$parameters$line[scale_declaration_inds])
+  new_lines$model$line[scale_sampling_inds] <- new_declarations
+  new_stan_code <- lapply(names(new_lines), function(block_name){
+    paste0(block_name, " {\n", 
+           paste0("\t", gsub(pattern = "\n", 
+                             replacement = "\n\t", 
+                             new_lines[[block_name]]$line), 
+                  collapse = "\n"), 
+           "\n}")
+  })
+  new_stan_code <- paste0(unlist(new_stan_code), collapse = "\n")
+  new_stan_code
 }
 
 parse_Stan <- function(stan_code, dat = NA, samps = NA, output_file = NA, sample_index = 1, post_pred_sim = TRUE, sim = TRUE){
@@ -948,12 +1165,27 @@ parse_Stan <- function(stan_code, dat = NA, samps = NA, output_file = NA, sample
   block_contents <- parse_stan_blocks(stan_code)
   block_contents <- block_contents[sapply(block_contents, length) > 0]
   parsed_lines <- lapply(block_contents, parse_stan_lines)
-  parsed_lines <- lapply(setNames(names(parsed_lines), names(parsed_lines)), 
-                         function(block_name){
-                           cbind(parsed_lines[[block_name]], block_name = block_name)
-                         })
-  parsed_lines <- bind_rows(parsed_lines)
+  parsed_lines <- cbind(bind_rows(parsed_lines), 
+                        block_name = rep(names(parsed_lines), sapply(parsed_lines, nrow)))
   
+  #get bounds in separately
+  ul_bounds <- trimws(do.call(rbind, strsplit(parsed_lines$bounds, ",")))
+  parsed_lines$lower_bound <- gsub(".*lower\\s*=\\s*([^, ]+).*", "\\1", parsed_lines$bounds)
+  parsed_lines$upper_bound <- gsub(".*upper\\s*=\\s*([^, ]+).*", "\\1", parsed_lines$bounds)
+  
+  #if sampling line lhs does not have an index, make sure you're using the appropriate size 
+  #(ie, assigning the whole param), as well as relaying bound info from the declaration
+  all_decl <- parsed_lines[parsed_lines$type == "declaration", c("var_name", "dimensions", "bounds",
+                                                                 "lower_bound", "upper_bound")]
+  sampling_inds <- which(parsed_lines$type == "sampling")
+  sampling_inds_no_index <- sampling_inds[is.na(parsed_lines$lhs_index[sampling_inds]) | 
+                                            parsed_lines$lhs_index[sampling_inds] == ""]
+  if(length(sampling_inds_no_index) > 0){
+    parsed_lines[sampling_inds_no_index,
+                 c("dimensions", "bounds", "lower_bound", "upper_bound")] <-
+      all_decl[match(parsed_lines[sampling_inds_no_index,]$var_name, all_decl$var_name),
+               c("dimensions", "bounds", "lower_bound", "upper_bound")]
+  }
   
   processed_code <- character(nrow(parsed_lines))
   for(i in 1:nrow(parsed_lines)){
@@ -961,12 +1193,31 @@ parse_Stan <- function(stan_code, dat = NA, samps = NA, output_file = NA, sample
                                          sample_index = sample_index, post_pred_sim = post_pred_sim, sim = sim)
   }
   
+  #if there are transformed parameters, need to sample them before transforming parameters
+  if("transformed parameters" %in% names(block_contents)){
+    model_param_inds <- which(parsed_lines$block_name == "parameters" & parsed_lines$type == "declaration")
+    param_names <- parsed_lines$var_name[model_param_inds]
+    sampling_inds <- which(parsed_lines$block_name == "model" &
+      parsed_lines$type == "sampling")
+    sampling_inds <- sampling_inds[parsed_lines$var_name[sampling_inds] %in% param_names]
+    insert_after_line <- max(which(parsed_lines$block_name == "parameters"))
+    reorder_vec <- append(x = (1:length(processed_code))[-sampling_inds], sampling_inds, insert_after_line)
+    
+    reordered_processed_code <- processed_code[reorder_vec]
+    
+    reordered_parsed_lines <- parsed_lines
+    reordered_parsed_lines$block_name[sampling_inds] <- "parameters"
+    reordered_parsed_lines <- reordered_parsed_lines[reorder_vec,]
+    
+    processed_code <- reordered_processed_code  
+    parsed_lines <- reordered_parsed_lines
+  }
+  
   #add in tabs for whitespace... need to also get newline characters handled
   processed_code <- sapply(1:length(parsed_lines$loop_depth), function(i){
     tabs <- paste0(rep(x = "\t", times = parsed_lines$loop_depth[i]), collapse = "")
     paste0(tabs, gsub(pattern = "\n", replacement = paste0("\n", tabs), x = processed_code[i]), collapse = "")
   })
-  
   
   #add in block comments
   rleb <- rle(parsed_lines$block_name)
@@ -1039,4 +1290,208 @@ parse_Stan <- function(stan_code, dat = NA, samps = NA, output_file = NA, sample
   }
   
   return(collapsed_code)
+}
+
+#### plotting functions ####
+
+prettyScientificExpr <- function(numbers, digits = 2, pretty = T, scientific = T, exp_scientific = 4) {
+  if(length(numbers) > 1){
+    
+    if(pretty) numbers <- pretty(numbers, length(numbers))
+    
+    if(scientific){
+      out <- lapply(numbers, prettyScientificExpr, digits = digits)
+      return(list(values = sapply(out, function(x) x[["values"]]), 
+                  labels = lapply(out, function(x) x[["labels"]])))
+      return()
+    } else {
+      return(list(values = numbers, 
+                  labels = as.list(numbers)))
+    }
+    
+  } else {
+    
+    split_number <- strsplit(formatC(numbers, format = "e", digits = digits), "e")[[1]]
+    coefficient <- split_number[1]
+    exponent <- as.numeric(split_number[2])
+    
+    
+    
+    if (exponent == 0) {
+      result <- parse(text = coefficient)
+    } else if(exponent >= exp_scientific || exponent < 0){
+      result <- parse(text = paste0("list(", coefficient, " %*% 10^", exponent, ")"))
+    } else {
+      result <- parse(text = as.character(numbers))
+    }
+    
+    return(list(values = numbers, 
+                labels = result))
+    
+  }
+  
+}
+
+# prettyScientificExpr(7:10)
+
+
+add_continuous_legend <- function(colors, labels, positions, n_rect = 100, x = NA, y = NA, h = NA, w = NA, 
+                                  vertical = TRUE, xpd = NA, n_labels = 5, 
+                                  left_below = TRUE, log_scale = FALSE,
+                                  n_digits = 3, pretty = T, scientific = T, main = NA) {
+  
+  usr <- par("usr")
+  xyr <- diff(range(usr[1:2])) / par("pin")[1] / diff(range(usr[3:4])) * par("pin")[2]
+  # Calculate plot dimensions if not provided
+  if (is.na(h) || is.na(w)) {
+    plot_width <- usr[2] - usr[1]
+    plot_height <- usr[4] - usr[3]
+  }
+  
+  # Adjust size for orientation
+  if (vertical) {
+    h <- ifelse(is.na(h), plot_height * 0.75, h)
+    w <- ifelse(is.na(w), plot_width * 0.05, w)
+  } else {
+    h <- ifelse(is.na(h), plot_height * 0.05, h)
+    w <- ifelse(is.na(w), plot_width * 0.75, w)
+  }
+  
+  # Calculate legend position if not provided
+  if (is.na(x) || is.na(y)) {
+    if (vertical) {
+      x <- usr[2] - w * 1.5
+      y <- usr[4] - w * 0.5 / xyr
+    } else {
+      y <- usr[4] - h * 1.5
+      x <- usr[2] - w - h * 1.5 * xyr
+    }
+  }
+  
+  # Adjust the color spectrum
+  if (length(colors) != n_rect) {
+    colors <- colorRampPalette(colors)(n_rect)
+  }
+  
+  # Add rectangles
+  rect_width <- w / n_rect
+  rect_height <- h / n_rect
+  
+  for (i in 1:n_rect) {
+    if (vertical) {
+      rect_x_left <- x
+      rect_x_right <- x + w
+      rect_y_bottom <- y - (i-1) * rect_height
+      rect_y_top <- y - i * rect_height
+    } else {
+      rect_x_left <- x + (i-1) * rect_width
+      rect_x_right <- x + i * rect_width
+      rect_y_bottom <- y
+      rect_y_top <- y - h
+    }
+    
+    rect(rect_x_left, rect_y_bottom, rect_x_right, rect_y_top, col = colors[i], border = NA, xpd = xpd)
+  }
+  rect(x, y-h, x+w, y, xpd = xpd)
+  
+  # Handling labels
+  if (!all(is.na(labels)) && !all(is.na(positions))) {
+    if (!all(is.na(n_labels)) && n_labels > 1) {
+      
+      if (log_scale) {
+        min_val <- log10(min(labels))
+        max_val <- log10(max(labels))
+      } else {
+        min_val <- min(labels)
+        max_val <- max(labels)
+      }
+      max_pos <- positions[which.max(labels)]
+      min_pos <- positions[which.min(labels)]
+      diff_minmax <- max_val - min_val
+      diff_scale <- max_pos - min_pos
+      slope <- diff_minmax / diff_scale
+      
+      label_positions <- seq(0, 1, length.out = n_labels)
+      label_relative_positions <- label_positions - min_pos
+      extrapolated_values <- min_val + label_relative_positions * slope
+      if (log_scale) {
+        extrapolated_values <- 10^(extrapolated_values)
+      }
+      
+      #now make pretty if we want that
+      if(log_scale){
+        order_mag <- (10^floor(log10(extrapolated_values)))
+        lab_logmod10 <- extrapolated_values / order_mag
+        if(pretty){
+          prettylab_logmod10 <- ceiling(lab_logmod10 - 1E-6)
+          prettylab_logmod10[length(prettylab_logmod10)] <- floor(lab_logmod10[length(lab_logmod10)] + 1E-6)
+          labels_values <- prettyScientificExpr(prettylab_logmod10 * order_mag, n_digits, 
+                                                pretty = F, scientific = scientific)
+        } else {
+          labels_values <- prettyScientificExpr(lab_logmod10 * order_mag, n_digits, 
+                                                pretty = F, scientific = scientific)
+        }
+        
+      } else {
+        labels_values <- prettyScientificExpr(extrapolated_values, n_digits, 
+                                              pretty = pretty, scientific = scientific)  
+      }
+      
+      
+      label_positions <- sapply(labels_values$values, function(xi){
+        if(log_scale){
+          (log10(xi) - min_val) / slope + min_pos
+        } else {
+          (xi - min_val) / slope + min_pos
+        }
+      })
+      
+      #check that none of the labels_vals are outside the range of the scale
+      in_range <- label_positions >= 0 & label_positions <= 1
+      labels_values$values <- labels_values$values[in_range]
+      labels_values$labels <- labels_values$labels[in_range]
+      label_positions <- label_positions[in_range]
+      label_vals <- labels_values[["labels"]]
+      
+      # #if we got rid of boundary labels, add them back in?
+      # interlab_dist <- 1 / n_labels
+      # boundary_lab_relative_dists <- c(label_positions[1], 1 - tail(label_positions, 1)) / interlab_dist
+      # if(any(boundary_lab_relative_dists > 0.5)){
+      #   labpos_to_add <- c(0,1)[boundary_lab_relative_dists > 0.5]
+      #   label_positions <- c(label_positions, labpos_to_add)
+      #   labels_values
+      # }
+      
+      #plot the labels
+      lb <- left_below
+      for (i in seq_along(label_vals)) {
+        label_pos <- label_positions[i]
+        label_val <- label_vals[[i]]
+        if (vertical) {
+          text_x <- x - (strwidth(label_val) / 2 + w / 2) * ifelse(lb, 1, -1) + ifelse(lb, 0, w)
+          text_y <- y - h + h * label_pos
+          segments(x0 = x + w * ifelse(lb, 0, 1), 
+                   x1 = x + ifelse(lb, -w / 4, 5 * w / 4), 
+                   y0 = text_y, 
+                   y1 = text_y, 
+                   xpd = xpd)
+        } else {
+          text_x <- x + label_pos * w
+          text_y <- y - (h * ifelse(lb, 1, 0) + strheight(lb) / 2 + h / 2) * ifelse(lb, 1, -1)
+          segments(x0 = text_x, 
+                   x1 = text_x, 
+                   y0 = y - h * ifelse(lb, 1, 0), 
+                   y1 = y + ifelse(lb, - 5 * h / 4, h/ 4),
+                   xpd = xpd)
+        }
+        text(text_x, text_y, label_val, xpd = xpd)
+      }
+    }
+  }
+  
+  #write in the title
+  if(!is.na(main)){
+    text(x = x + w / 2, y = y + strheight(main) / 4 * 3, labels = main, xpd = xpd, font = 2)  
+  }
+  
 }
