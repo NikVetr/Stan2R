@@ -50,17 +50,19 @@ install.packages(c("data.table", "dplyr", "cmdstanr", "posterior", "extraDistr",
 
 # Optionally, ensure cmdstanr is configured with CmdStan
 cmdstanr::install_cmdstan()
+```
 
-## Installation
+### 2. Clone the Repository
 
-Clone the repository:
+After setting up the R environment and CmdStan, clone the Stan2R repository to your local machine:
 
 ```bash
 git clone https://github.com/NikVetr/Stan2R.git
+```
 
 ## Usage
 
-Please see `\R\example.R` for example usage -- you're probably best served by modifying that script for your own use. If things don't work, feel free to reach out and I'll do my best to help.
+Please see `R/example.R` for example usage -- you're probably best served by modifying that script for your own use. If things don't work, feel free to reach out and I'll do my best to help.
 
 ## Contributing
 
