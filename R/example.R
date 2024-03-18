@@ -1,4 +1,4 @@
-set.seed(1)
+set.seed(1E6)
 
 #### load packages and functions ####
 library(data.table)
@@ -31,9 +31,9 @@ stan_code <- readLines(model_path) #load stan model spec
 #specify input data as list
 print(retrieve_block_objects(stan_code, "data", "declaration"))
 dat <- list(n = 400)
-dat$k <- sample(1:100, size = dat$n, replace = T)
+dat$k <- sample(1:200, size = dat$n, replace = T)
 dat$x <- rbinom(dat$n, size = dat$k, prob = rbeta(dat$n, 5, 5))
-dat$n_groups <- 50
+dat$n_groups <- 25
 dat$group <- sample(1:dat$n_groups, size = dat$n, replace = T)
 
 # process Stan file for prior predictive simulation
@@ -58,6 +58,7 @@ write_stan_json(prior_predictive_sim, file = paste0(stan_output_dir, model_name,
                 always_decimal = FALSE)
 
 #fit model to simulated data
+file.remove(list.files(stan_mcmc_dir, full.names = T))
 mod <- cmdstan_model(model_path)
 fit <- mod$sample(chains = 4, iter_sampling = 1E3, iter_warmup = 1E3, 
                   data = dat_sim, parallel_chains = 4, adapt_delta = 0.9, 
@@ -205,13 +206,14 @@ for(uv_name in unobs_var_names){
     breaks <- c(breaks[1] - breaks_interv, breaks, breaks[length(breaks)] + breaks_interv)
     
     freqlims <- c(0, max(hist(post_pred_dists_unobs_vars[[uv_name]], breaks = breaks, plot = F)$counts) * 1.25)
-    hist(post_pred_dists_unobs_vars[[uv_name]], xlim = varlims, xlab = paste0("posterior ", uv_name), ylim = freqlims,
+    hist(post_pred_dists_unobs_vars[[uv_name]], xlim = varlims, xlab = "", ylim = freqlims,
          main = paste0(uv_name), freq = T, ylab = "density", axes = F, breaks = breaks, xpd = NA)
     in_95 <- post_pred_dists_unobs_vars[[uv_name]] >= post_pred_95q_unobs_vars[[uv_name]][1] &
       post_pred_dists_unobs_vars[[uv_name]] <= post_pred_95q_unobs_vars[[uv_name]][2]
-    hist(post_pred_dists_unobs_vars[[uv_name]][in_95,], xlim = varlims, xlab = paste0("posterior ", uv_name), 
-         main = paste0(uv_name), freq = T, ylab = "density", axes = F, breaks = breaks, xpd = NA, col = "grey40", add = T)
+    hist(post_pred_dists_unobs_vars[[uv_name]][in_95,], freq = T, 
+         breaks = breaks, xpd = NA, col = "grey40", add = T)
     axis(1, pos = -displ_y * 5)
+    mtext(side = 1, padj = displ_y * 3, text = paste0("posterior ", uv_name), xpd = NA)
     displ_y <- diff(par("usr")[3:4]) / 50
     segments(x1 = post_pred_95q_unobs_vars[[uv_name]][1], 
              x0 = post_pred_95q_unobs_vars[[uv_name]][2], 
