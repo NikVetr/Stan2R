@@ -169,9 +169,9 @@ text(x = mean(par("usr")[1:2]), y = par("usr")[4], cex = 0.75, xpd = NA, pos = 3
      labels = "(NOTE: data simulated from empirical posterior. Perfect calibration only expected when using prior predictive in aggregate)")
 dev.off()
 
-#check retrodictive accuracy with posterior mean
+#check retrodictive accuracy with posterior mean 
 #also assessing posterior predictive density (mass for our beta-binomial model)
-unobs_vars
+# unobs_vars
 
 #first let's do the model parameters -- can get directly from samps, or by processing post_pred_list
 unobs_var_names <- names(prior_predictive_sim)[!(names(prior_predictive_sim) %in% c(variables_to_ignore, "x"))]
