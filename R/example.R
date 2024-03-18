@@ -7,13 +7,13 @@ library(cmdstanr)
 library(posterior)
 
 #set working directory to this repo
-setwd("~/repos/parse-Stan/")
+setwd("~/repos/Stan2R/")
 
 #read in functions
 source("R/functions.R")
 
 #### load in the Stan model and fitted MCMC output ####
-base_dir <- "~/repos/parse-Stan/"
+base_dir <- "~/repos/Stan2R/"
 stan_model_dir <- paste0(base_dir, "models/")
 stan_data_dir <- paste0(base_dir, "data/")
 stan_output_dir <- paste0(base_dir, "output/")
@@ -30,8 +30,8 @@ stan_code <- readLines(model_path) #load stan model spec
 
 #specify input data as list
 print(retrieve_block_objects(stan_code, "data", "declaration"))
-dat <- list(n = 1000)
-dat$k <- sample(1:500, size = dat$n, replace = T)
+dat <- list(n = 400)
+dat$k <- sample(1:100, size = dat$n, replace = T)
 dat$x <- rbinom(dat$n, size = dat$k, prob = rbeta(dat$n, 5, 5))
 dat$n_groups <- 50
 dat$group <- sample(1:dat$n_groups, size = dat$n, replace = T)
@@ -194,15 +194,53 @@ png(filename = paste0(stan_figure_dir, "parameter_goodness-of-fit.png"), width =
 par(mar = c(5,5,3.5,2), mfrow = dim_param_fig)
 for(uv_name in unobs_var_names){
   
-  varlims <- range(c(post_pred_95q_unobs_vars[[uv_name]], unobs_vars[[uv_name]]))
-  plot(unobs_vars[[uv_name]], post_pred_mean_unobs_vars[[uv_name]], pch = 19, col = adjustcolor(1, 0.5), cex = 0.5, #dat$k / max(dat$k),
-      xlab = paste0("observed ", uv_name, " (from prior predictive sample)"), ylab = paste0("posterior ", uv_name), ylim = varlims, xlim = varlims,
-       main = paste0(uv_name))
-  segments(x0 = unobs_vars[[uv_name]], x1 = unobs_vars[[uv_name]], y0 = post_pred_95q_unobs_vars[[uv_name]][1,], y1 = post_pred_95q_unobs_vars[[uv_name]][2,], col = adjustcolor(1, 0.5))
-  abline(0,1,col=2,lty=2,lwd=2)
-  legend(x = "topleft", legend = c("posterior mean", "95% credible interval", "1-to-1 line"), pch = c(19, NA,NA), lty = c(NA,1,2), col = c(1,1,2))
-  text(x = mean(par("usr")[1:2]), y = par("usr")[4], pos = 3, xpd = NA,
-       labels = paste0("Pearson's r(observed value, posterior mean) = ", round(cor(unobs_vars[[uv_name]], post_pred_mean_unobs_vars[[uv_name]]), 3)))
+  
+  
+  if(length(unobs_vars[[uv_name]]) == 1){
+    varlims <- range(c(post_pred_dists_unobs_vars[[uv_name]], unobs_vars[[uv_name]]))
+    breaks_interv <- c(diff(post_pred_95q_unobs_vars[[uv_name]])) / 12
+    breaks <- seq(post_pred_95q_unobs_vars[[uv_name]][1], varlims[1], by = -breaks_interv)
+    breaks <- c(rev(breaks[-1]), 
+                seq(post_pred_95q_unobs_vars[[uv_name]][1], varlims[2], by = breaks_interv))
+    breaks <- c(breaks[1] - breaks_interv, breaks, breaks[length(breaks)] + breaks_interv)
+    
+    freqlims <- c(0, max(hist(post_pred_dists_unobs_vars[[uv_name]], breaks = breaks, plot = F)$counts) * 1.25)
+    hist(post_pred_dists_unobs_vars[[uv_name]], xlim = varlims, xlab = paste0("posterior ", uv_name), ylim = freqlims,
+         main = paste0(uv_name), freq = T, ylab = "density", axes = F, breaks = breaks, xpd = NA)
+    in_95 <- post_pred_dists_unobs_vars[[uv_name]] >= post_pred_95q_unobs_vars[[uv_name]][1] &
+      post_pred_dists_unobs_vars[[uv_name]] <= post_pred_95q_unobs_vars[[uv_name]][2]
+    hist(post_pred_dists_unobs_vars[[uv_name]][in_95,], xlim = varlims, xlab = paste0("posterior ", uv_name), 
+         main = paste0(uv_name), freq = T, ylab = "density", axes = F, breaks = breaks, xpd = NA, col = "grey40", add = T)
+    axis(1, pos = -displ_y * 5)
+    displ_y <- diff(par("usr")[3:4]) / 50
+    segments(x1 = post_pred_95q_unobs_vars[[uv_name]][1], 
+             x0 = post_pred_95q_unobs_vars[[uv_name]][2], 
+             y0 = par("usr")[3] - displ_y, 
+             y1 = par("usr")[3] - displ_y, col = adjustcolor(1, 0.5), lwd = 2, xpd = NA)
+    points(x = post_pred_mean_unobs_vars[[uv_name]], y = par("usr")[3] - displ_y,
+           pch = 19, col = adjustcolor(1, 1), cex = 1, xpd = NA)
+    points(x = unobs_vars[[uv_name]], y = par("usr")[3] - displ_y, 
+           pch = 19, col = 2, cex = 1, xpd = NA)
+    
+    yax_locs <- pretty(c(0, diff(par("usr")[3:4])))
+    axis(2, at = yax_locs, labels = yax_locs / length(post_pred_dists_unobs_vars[[uv_name]]))
+    legend(x = "topleft", legend = c("posterior mean", "95% credible interval", "true value"), 
+           pch = c(19, NA, 19), lty = c(NA,1,NA), col = c(1,1,2))
+    
+  
+    
+  } else {
+    varlims <- range(c(post_pred_95q_unobs_vars[[uv_name]], unobs_vars[[uv_name]]))
+    plot(unobs_vars[[uv_name]], post_pred_mean_unobs_vars[[uv_name]], pch = 19, col = adjustcolor(1, 0.5), cex = 0.5, #dat$k / max(dat$k),
+         xlab = paste0("observed ", uv_name, " (from prior predictive sample)"), ylab = paste0("posterior ", uv_name), ylim = varlims, xlim = varlims,
+         main = paste0(uv_name))
+    segments(x0 = unobs_vars[[uv_name]], x1 = unobs_vars[[uv_name]], y0 = post_pred_95q_unobs_vars[[uv_name]][1,], y1 = post_pred_95q_unobs_vars[[uv_name]][2,], col = adjustcolor(1, 0.5))
+    abline(0,1,col=2,lty=2,lwd=2)
+    legend(x = "topleft", legend = c("posterior mean", "95% credible interval", "1-to-1 line"), pch = c(19, NA,NA), lty = c(NA,1,2), col = c(1,1,2))
+    text(x = mean(par("usr")[1:2]), y = par("usr")[4], pos = 3, xpd = NA,
+         labels = paste0("Pearson's r(observed value, posterior mean) = ", round(cor(unobs_vars[[uv_name]], post_pred_mean_unobs_vars[[uv_name]]), 3)))
+  }
+  
   
 }
 dev.off()
@@ -233,7 +271,7 @@ nlppm_col_ind <- ceiling(nlppm_col_ind / max(nlppm_col_ind) * 100) + 1
 colvals <- viridisLite::cividis(101)
 
 #and plot it
-png(filename = paste0(stan_figure_dir, "outcome_goodness-of-fit.png"), width = 800, height = 500, pointsize = 15)
+png(filename = paste0(stan_figure_dir, "outcome_goodness-of-fit.png"), width = 800, height = 700, pointsize = 16)
 par(mar = c(4,4,4,8))
 plot(dat$x , post_pred_mean_outcome / dat$k, pch = 19, col = colvals[nlppm_col_ind], cex = 0.5, #dat$k / max(dat$k),
      xlim = c(0,1), ylim = c(0,1), xlab = "observed proportion", ylab = "posterior proportion", 
