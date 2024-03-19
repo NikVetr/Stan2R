@@ -10,7 +10,7 @@ NOTE: do make sure to inspect any outputted R code for errors. I mostly wrote it
 
 ## Example
 
-I wrote a short example (`\R\example.R`) using a fairly simple multilevel beta-binomial model.
+I wrote a short example (`\R\example.R`) using a small, multilevel beta-binomial model.
 
 In it, I perform:
 
@@ -20,7 +20,7 @@ In it, I perform:
 - **Posterior Predictive Simulation**: Uses the fitted MCMC samples to simulate from the posterior predictive distribution.
 - **Posterior Predictive Mass Estimation**: Uses the fitted MCMC samples to compute average fit mass for each observation.
 - **Visual Assessment of Calibration**: Visually inspects model calibration by generating histograms of parameter quantiles in each of their marginal joint posterior distributions.
-- **Visual Assessment of Model Fit**: Compares posterior predictive means against observed output values and unobserved variables (whose true values are known, as they were sampled from model prior). Visualizes these with scatterplots, alongside estimates of mean log posterior predictive masses and credible intervals.
+- **Visual Assessment of Model Fit**: Compares posterior predictive means against both "observed" and "unobserved" variables (all of whose true values are known, as they were sampled from the model prior). Visualizes these with scatterplots, alongside estimates of mean log posterior predictive masses and credible intervals.
 
 This outputs a few quick figures, like
 
@@ -30,7 +30,12 @@ This outputs a few quick figures, like
 
 ![Parameter Fit](figures/parameter_goodness-of-fit.png)
 
-(showing posterior means for different model parameters plotted against their true values)
+(showing posterior means and credible intervals for different model parameters, plotted against their true values)
+
+![Outcome Fit](figures/outcome_goodness-of-fit.png)
+
+(showing posterior predictive means for observed proportions, plotted against their true values and colored by LPPM)
+
 
 ## Getting Started
 
