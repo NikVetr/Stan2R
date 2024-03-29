@@ -54,7 +54,7 @@ munge_samps <- function(var_name, df) {
   }
 }
 
-clean_stan <- function(stan_code) {
+clean_stan <- function(stan_code, return_annot = F) {
   
   # Regular expressions for detecting types of lines
   declaration_regex <- "^\\s*(int|real|vector|row_vector|matrix|array)"
@@ -62,16 +62,50 @@ clean_stan <- function(stan_code) {
   target_assignment_regex <- "^\\s*target\\s*(\\+=|=)"
   
   # create a data object to modify
+  annot <- matrix("", nrow = length(stan_code), ncol = 5)
+  colnames(annot) <- c("leading_ws", "trailing_ws", "comments", "preceding_content", "n_empty_preceding")
+  annot <- data.frame(annot)
+  annot$n_empty_preceding <- 0
   lines <- stan_code
   
   # Remove comments (text after //)
+  has_comments <- grepl("//", lines)
+  annot$comments[has_comments] <- paste0("#", gsub(".*//", "", lines[has_comments]))
   lines <- gsub("//.*", "", lines)
   
   #trim whitespace
+  lws <- regmatches(lines, gregexpr("^\\s+", lines))
+  lws[sapply(lws, length) == 0] <- ""
+  tws <- regmatches(lines, gregexpr("\\s+$", lines))
+  tws[sapply(tws, length) == 0] <- ""
+  annot$leading_ws <- unlist(lws)
+  annot$trailing_ws <- unlist(tws)
   lines <- trimws(lines)
   
+  #remove one chunk of the preceding whitespace to reflect different style conventions
+  annot$leading_ws <- gsub("\t", "  ", annot$leading_ws)
+  smallest_lws <- nchar(annot$leading_ws)
+  smallest_lws <- paste0(rep(x = " ", min(smallest_lws[smallest_lws > 0])), collapse = "")
+  annot$leading_ws <- sub(smallest_lws, "", annot$leading_ws)
+  
   # Remove empty lines
-  lines <- lines[nchar(lines) > 0]
+  empty_lines <- nchar(lines) == 0
+  rleel <- rle(empty_lines)
+  el_blocks <- cumsum(rleel$lengths)
+  el_nextline_inds <- el_blocks[rleel$values] + 1
+  el_preceding_len <- rleel$lengths[rleel$values]
+  annot$n_empty_preceding[el_nextline_inds] <- el_preceding_len
+  annot$preceding_content[el_nextline_inds] <- sapply(el_nextline_inds, function(i){
+    prev_lines_content <- annot[(i-annot$n_empty_preceding[i]):(i-1), 
+                                c("leading_ws", "comments")]
+    prev_lines_content <- apply(prev_lines_content, 1, function(x) 
+      paste0(unlist(x), collapse = ""))
+    prev_lines_content <- paste0(paste0(prev_lines_content, "\n"), collapse = "")
+    prev_lines_content
+  })
+  annot <- annot[!empty_lines, c("leading_ws", "trailing_ws", 
+                                 "comments", "preceding_content")]
+  lines <- lines[!empty_lines]
   
   # Ensure closing brackets are on their own lines
   straggling_close_brackets <- grepl("}", lines) & nchar(lines) != 1
@@ -83,8 +117,23 @@ clean_stan <- function(stan_code) {
       insert_lines <- strsplit(x = lines[current_line], 
                                split = paste0("(?=", "}", ")"), 
                                perl = TRUE)[[1]]
+      
+      #insert the lines
       lines <- append(lines, insert_lines, current_line)
+      insert_annot <- data.frame(do.call(rbind, 
+                              replicate(length(insert_lines), 
+                                        cbind(annot[2,"leading_ws"], 
+                                              matrix("", 1, 3)), 
+                                        simplify = F)
+      )); colnames(insert_annot) <- colnames(annot)
+      insert_annot[1,] <- annot[current_line,]
+      annot <- rbind(annot[1:current_line,], 
+                     insert_annot,
+                     annot[(current_line+1):nrow(annot),])
+      
+      #and now delete the old lines
       lines <- lines[-current_line]
+      annot <- annot[-current_line,]
       n_lines_inserted <- n_lines_inserted + length(insert_lines) - 1
     }
   }
@@ -123,9 +172,24 @@ clean_stan <- function(stan_code) {
         insert_lines <- c(insert_lines, last_bit)
       }
       
+      #insert the lines
       lines <- append(lines, insert_lines, current_line)
+      insert_annot <- data.frame(do.call(rbind, 
+                                         replicate(length(insert_lines), 
+                                                   cbind(annot[2,"leading_ws"], 
+                                                         matrix("", 1, 3)), 
+                                                   simplify = F)
+      )); colnames(insert_annot) <- colnames(annot)
+      insert_annot[1,] <- annot[current_line,]
+      annot <- rbind(annot[1:current_line,], 
+                     insert_annot,
+                     annot[(current_line+1):nrow(annot),])
+      
+      #and now delete the old lines
       lines <- lines[-current_line]
+      annot <- annot[-current_line,]
       n_lines_inserted <- n_lines_inserted + length(insert_lines) - 1
+     
     }
   }
   
@@ -144,8 +208,21 @@ clean_stan <- function(stan_code) {
       line_bounds <- unlist(rle_df[i,2:3] + c(0,1)) - n_lines_removed
       remove_lines <- lines[line_bounds[1]:line_bounds[2]]
       insert_line <- paste0(remove_lines, collapse = " ")
+      
+      #insert the line
       lines <- append(lines, insert_line, line_bounds[2])
+      insert_annot <- data.frame(cbind(annot[2,"leading_ws"], 
+                                       matrix("", 1, 3))); 
+      colnames(insert_annot) <- colnames(annot)
+      insert_annot[1,] <- annot[line_bounds[2],]
+      insert_annot$comments <- paste0(annot$comments[line_bounds[1]:line_bounds[2]], collapse = " ")
+      annot <- rbind(annot[1:line_bounds[2],], 
+                     insert_annot,
+                     annot[(line_bounds[2]+1):nrow(annot),])
+      
+      #and now delete the old lines
       lines <- lines[-(line_bounds[1]:line_bounds[2])]
+      annot <- annot[-(line_bounds[1]:line_bounds[2]),]
       n_lines_removed <- n_lines_removed + length(remove_lines) - 1
     }
   }
@@ -163,37 +240,61 @@ clean_stan <- function(stan_code) {
       lhs <- trimws(substr(line, 1, nchar(line) - nchar(rhs)))
       insert_lines <- c(paste0(lhs, ";"), 
                         paste(tail(strsplit(lhs, " ")[[1]], 1), rhs))
+      
+      #insert the lines
       lines <- append(lines, insert_lines, current_line)
+      insert_annot <- data.frame(do.call(rbind, 
+                                         replicate(length(insert_lines), 
+                                                   cbind(annot[2,"leading_ws"], 
+                                                         matrix("", 1, 3)), 
+                                                   simplify = F)
+      )); colnames(insert_annot) <- colnames(annot)
+      insert_annot[1,] <- annot[current_line,]
+      annot <- rbind(annot[1:current_line,], 
+                     insert_annot,
+                     annot[(current_line+1):nrow(annot),])
+      
+      #and now delete the old lines
       lines <- lines[-current_line]
+      annot <- annot[-current_line,]
+      
       n_lines_inserted <- n_lines_inserted + length(insert_lines) - 1
     }
     
   }
   
-  return(lines)
+  if(return_annot){
+    return(list(code = lines, annot = annot))  
+  } else {
+    return(lines)
+  }
+  
 }
 
 #### parsing functions ####
 
-parse_stan_blocks <- function(stan_code) {
+parse_stan_blocks <- function(stan_code, return_annot_mod = F) {
   
   # Split the code into lines
   lines <- stan_code
   
   # Initialize variables
+  block_mod <- integer(0)
   current_block <- NULL
   blocks <- list()
   bracket_count <- 0  # Counter for open curly brackets
   block_regex <- "^\\s*(data|transformed data|parameters|transformed parameters|model|functions|generated quantities)\\s*\\{"
   
   # Iterate over the lines
-  for (line in lines) {
+  for (line_i in seq_along(lines)) {
+    line <- lines[line_i]
     
     # Check for block start
     if (grepl(block_regex, line)) {
       current_block <- sub("^\\s*(\\w+(\\s+\\w+)?)\\s*\\{.*", "\\1", line)
       blocks[[current_block]] <- character(0)
       bracket_count <- 1
+      block_mod <- c(block_mod, line_i)
       
     } else if (!is.null(current_block)) {
       
@@ -204,6 +305,7 @@ parse_stan_blocks <- function(stan_code) {
       
       if (bracket_count == 0) {
         current_block <- NULL
+        block_mod <- c(block_mod, line_i)
       } else {
         # If we are inside a block, add the line to the current block
         blocks[[current_block]] <-  c(blocks[[current_block]], line)
@@ -211,7 +313,13 @@ parse_stan_blocks <- function(stan_code) {
     }
   }
   
-  return(blocks)
+  #return objects per request
+  if(return_annot_mod){
+    return(list(block_contents = blocks, block_mod = block_mod))  
+  } else {
+    return(blocks)
+  }
+  
 }
 
 parse_declaration <- function(line) {
@@ -1111,7 +1219,7 @@ loop_over_param <- function(var_name, dims, set_as = 1) {
 }
 
 
-flatten_model <- function(stan_code, scale_identifier = "sd_", set_as = 1){
+flatten_model <- function(stan_code, scale_identifier = "sd_", set_as = 1, put_params_in_data = F){
   #this function parses a Stan model, identifies scale parameters,
   #and sets them all to 1 (or whatever is in <set_as>), instead of sampling
   
@@ -1130,23 +1238,44 @@ flatten_model <- function(stan_code, scale_identifier = "sd_", set_as = 1){
     parsed_lines$model$var_name %in% scale_params$name
   
   #create modified lines
-  new_declarations <- character(length(scale_params$name))
-  new_declarations[scale_params$dim == "1"] <- paste0(scale_params$name, " = ", set_as, ";")
-  if(any(scale_params$dim != "1")){
-    new_declarations[scale_params$dim != "1"] <- sapply(which(scale_params$dim != "1"), function(flpi){
-      loop_over_param(var_name = scale_params$name[flpi], dims = scale_params$dim[flpi], set_as = set_as)
-    })  
+  if(put_params_in_data){
+    new_lines <- parsed_lines
+    new_lines$data <- rbind(new_lines$data, new_lines$parameters[scale_declaration_inds,])
+    new_lines$parameters <- new_lines$parameters[!scale_declaration_inds,]
+    new_lines$model <- new_lines$model[!scale_sampling_inds,]
+  } else {
+    if(length(set_as) == 1){
+      new_declarations <- character(length(scale_params$name))
+      new_declarations[scale_params$dim == "1"] <- paste0(scale_params$name, " = ", set_as, ";")
+      if(any(scale_params$dim != "1")){
+        new_declarations[scale_params$dim != "1"] <- sapply(which(scale_params$dim != "1"), function(flpi){
+          loop_over_param(var_name = scale_params$name[flpi], dims = scale_params$dim[flpi], set_as = set_as)
+        })  
+      }
+      constrain_free_declarations <- gsub("<[^>]*>", "", parsed_lines$parameters$line[scale_declaration_inds])
+      new_declarations <- paste0(constrain_free_declarations, "\n",
+                                 new_declarations)  
+    } else {
+      new_declarations <- setNames(character(length(scale_params$name)), scale_params$name)
+      new_declarations[scale_params$dim == "1"] <- paste0(scale_params$name, " = ", set_as[scale_params$name], ";")
+      if(any(scale_params$dim != "1")){
+        new_declarations[scale_params$dim != "1"] <- sapply(which(scale_params$dim != "1"), function(flpi){
+          loop_over_param(var_name = scale_params$name[flpi], dims = scale_params$dim[flpi], set_as = set_as[scale_params$name[flpi]])
+        })  
+      }
+      constrain_free_declarations <- gsub("<[^>]*>", "", parsed_lines$parameters$line[scale_declaration_inds])
+      new_declarations <- paste0(constrain_free_declarations, "\n",
+                                 new_declarations)
+    }
+    
+    #integrate into the original program
+    new_lines <- parsed_lines
+    new_lines$parameters$line[scale_declaration_inds] <- paste0("// ", 
+                                                                new_lines$parameters$line[scale_declaration_inds])
+    new_lines$model$line[scale_sampling_inds] <- new_declarations
   }
-  constrain_free_declarations <- gsub("<[^>]*>", "", parsed_lines$parameters$line[scale_declaration_inds])
-  new_declarations <- paste0(constrain_free_declarations, "\n",
-                             new_declarations)
   
-  
-  #integrate into the original program
-  new_lines <- parsed_lines
-  new_lines$parameters$line[scale_declaration_inds] <- paste0("// ", 
-                                                              new_lines$parameters$line[scale_declaration_inds])
-  new_lines$model$line[scale_sampling_inds] <- new_declarations
+
   new_stan_code <- lapply(names(new_lines), function(block_name){
     paste0(block_name, " {\n", 
            paste0("\t", gsub(pattern = "\n", 
@@ -1161,9 +1290,25 @@ flatten_model <- function(stan_code, scale_identifier = "sd_", set_as = 1){
 
 parse_Stan <- function(stan_code, dat = NA, samps = NA, output_file = NA, sample_index = 1, post_pred_sim = TRUE, sim = TRUE){
   
-  stan_code <- clean_stan(stan_code)
-  block_contents <- parse_stan_blocks(stan_code)
-  block_contents <- block_contents[sapply(block_contents, length) > 0]
+  #preprocess the code for easier interpretation
+  clean_stan_info <- clean_stan(stan_code, T)
+  clean_stan_annot <- clean_stan_info$annot
+  clean_stan_code <- clean_stan_info$code
+  
+  #extract block information
+  block_contents_info <- parse_stan_blocks(clean_stan_code, T)
+  block_contents <- block_contents_info$block_contents
+  empty_blocks <- sapply(block_contents, length) == 0
+  
+  #modify annot for block removal
+  clean_stan_annot <- clean_stan_annot[-block_contents_info$block_mod,]
+  
+  #remove empty blocks if there are any
+  if(any(empty_blocks)){
+    block_contents <- block_contents[!empty_blocks]  
+  }
+  
+  #parse lines in each block and concatenate
   parsed_lines <- lapply(block_contents, parse_stan_lines)
   parsed_lines <- cbind(bind_rows(parsed_lines), 
                         block_name = rep(names(parsed_lines), sapply(parsed_lines, nrow)))
@@ -1195,22 +1340,30 @@ parse_Stan <- function(stan_code, dat = NA, samps = NA, output_file = NA, sample
   
   #if there are transformed parameters, need to sample them before transforming parameters
   if("transformed parameters" %in% names(block_contents)){
+    
     model_param_inds <- which(parsed_lines$block_name == "parameters" & parsed_lines$type == "declaration")
     param_names <- parsed_lines$var_name[model_param_inds]
     sampling_inds <- which(parsed_lines$block_name == "model" &
       parsed_lines$type == "sampling")
     sampling_inds <- sampling_inds[parsed_lines$var_name[sampling_inds] %in% param_names]
     insert_after_line <- max(which(parsed_lines$block_name == "parameters"))
+    
+    #construct new indices and reorder all relevant data objects
     reorder_vec <- append(x = (1:length(processed_code))[-sampling_inds], sampling_inds, insert_after_line)
-    
     reordered_processed_code <- processed_code[reorder_vec]
-    
     reordered_parsed_lines <- parsed_lines
     reordered_parsed_lines$block_name[sampling_inds] <- "parameters"
     reordered_parsed_lines <- reordered_parsed_lines[reorder_vec,]
+    reordered_annot <- clean_stan_annot[reorder_vec,]
     
+    #add in new line after insertion
+    reordered_processed_code[insert_after_line] <- 
+      paste0(reordered_processed_code[insert_after_line], "\n\n")
+    
+    #assign to standard data objects
     processed_code <- reordered_processed_code  
     parsed_lines <- reordered_parsed_lines
+    clean_stan_annot <- reordered_annot
   }
   
   #add in tabs for whitespace... need to also get newline characters handled
@@ -1218,26 +1371,7 @@ parse_Stan <- function(stan_code, dat = NA, samps = NA, output_file = NA, sample
     tabs <- paste0(rep(x = "\t", times = parsed_lines$loop_depth[i]), collapse = "")
     paste0(tabs, gsub(pattern = "\n", replacement = paste0("\n", tabs), x = processed_code[i]), collapse = "")
   })
-  
-  #add in block comments
-  rleb <- rle(parsed_lines$block_name)
-  inds_to_insert_at <- cumsum(c(0, rleb$lengths[-length(rleb$lengths)])) + 1
-  inds_to_insert_at <- inds_to_insert_at + 1:length(inds_to_insert_at) - 1
-  block_names_to_insert <- parsed_lines$block_name[cumsum(rleb$lengths)]
-  block_names_to_insert <- paste0("#### ", block_names_to_insert, " ####")
-  block_names_to_insert <- sapply(block_names_to_insert, function(x)
-    paste0(
-      "\n#", paste0(rep("~", nchar(x)-2), collapse = ""), "#\n",
-      x, "\n",
-      "#", paste0(rep("~", nchar(x)-2), collapse = ""), "#\n",
-      collapse = ""
-    )
-  )
-  
-  for(i in 1:length(inds_to_insert_at)){
-    processed_code <- append(processed_code, block_names_to_insert[i], inds_to_insert_at[i]-1)  
-  }
-  
+
   #add in list object "out" to record dynamic variables
   newline_processed_code <- strsplit(processed_code, "\n")
   newline_processed_code <- sapply(newline_processed_code, function(lines){
@@ -1278,10 +1412,39 @@ parse_Stan <- function(stan_code, dat = NA, samps = NA, output_file = NA, sample
     return(paste0(new_lines, collapse = "\n"))
     
   })
-  processed_code <- c("library(data.table)\nout <- list()\n", newline_processed_code)
+  
+  #add in original comments and whitespace
+  processed_code <- paste0(unlist(clean_stan_annot$preceding_content),
+                           unlist(clean_stan_annot$leading_ws),
+                           newline_processed_code,
+                           unlist(clean_stan_annot$trailing_ws),
+                           unlist(clean_stan_annot$comments))
+  
+  #add in block comments
+  rleb <- rle(parsed_lines$block_name)
+  inds_to_insert_at <- cumsum(c(0, rleb$lengths[-length(rleb$lengths)])) + 1
+  inds_to_insert_at <- inds_to_insert_at + 1:length(inds_to_insert_at) - 1
+  block_names_to_insert <- parsed_lines$block_name[cumsum(rleb$lengths)]
+  block_names_to_insert <- paste0("#### ", block_names_to_insert, " ####")
+  block_names_to_insert <- sapply(block_names_to_insert, function(x)
+    paste0(
+      "\n#", paste0(rep("~", nchar(x)-2), collapse = ""), "#\n",
+      x, "\n",
+      "#", paste0(rep("~", nchar(x)-2), collapse = ""), "#\n",
+      collapse = ""
+    )
+  )
+  
+  for(i in 1:length(inds_to_insert_at)){
+    processed_code <- append(processed_code, block_names_to_insert[i], inds_to_insert_at[i]-1)  
+  }
+  
+  #make sure we call data.table and initialize out at the start
+  processed_code <- c("library(data.table)\nout <- list()\n", processed_code)
   
   #collapse into one line string
   collapsed_code <- paste0(processed_code, collapse = "\n")
+  collapsed_code <- gsub("\n\n\n", "\n\n", collapsed_code)
   
   if(!is.na(output_file)){
     sink(output_file)

@@ -44,6 +44,7 @@ r_code <- parse_Stan(stan_code,
                      sample_index = NA, 
                      post_pred_sim = F, 
                      sim = TRUE)
+cat(r_code)
 
 #evaluate code
 stan_env <- new.env()
@@ -90,6 +91,7 @@ r_code <- parse_Stan(stan_code,
                      sample_index = sample_index, 
                      post_pred_sim = T, 
                      sim = TRUE)
+cat(r_code)
 
 #evaluate code
 stan_env <- new.env()
@@ -212,9 +214,9 @@ for(uv_name in unobs_var_names){
       post_pred_dists_unobs_vars[[uv_name]] <= post_pred_95q_unobs_vars[[uv_name]][2]
     hist(post_pred_dists_unobs_vars[[uv_name]][in_95,], freq = T, 
          breaks = breaks, xpd = NA, col = "grey40", add = T)
+    displ_y <- diff(par("usr")[3:4]) / 50
     axis(1, pos = -displ_y * 5)
     mtext(side = 1, padj = displ_y * 3, text = paste0("posterior ", uv_name), xpd = NA)
-    displ_y <- diff(par("usr")[3:4]) / 50
     segments(x1 = post_pred_95q_unobs_vars[[uv_name]][1], 
              x0 = post_pred_95q_unobs_vars[[uv_name]][2], 
              y0 = par("usr")[3] - displ_y, 

@@ -13,17 +13,16 @@ transformed data {
 parameters {
   real theta_intercept;
   real theta_slope;
-  vector[n_groups] theta_group;
+  vector[n_groups] theta_group; //this is a test comment
   real<lower=0> theta_group_sd;
   real<lower=0> conc_offset;
-  
 }
 
 transformed parameters {
   vector[n] theta = theta_intercept + rep_vector(theta_slope, n) .* k_scaled + theta_group[group] * theta_group_sd;
   vector<lower=0, upper=1>[n] mu = inv_logit(theta);
   real<lower=2> conc = conc_offset * 3 + 40;
-  vector<lower=0>[n] shape1 = 1 + mu .* rep_vector(conc, n);
+  vector<lower=0>[n] shape1 = 1 + mu .* rep_vector(conc, n); //this is another test comment
   vector<lower=0>[n] shape2 = 1 + (1-mu) .* rep_vector(conc, n);
 }
 
