@@ -54,7 +54,7 @@ munge_samps <- function(var_name, df) {
   }
 }
 
-clean_stan <- function(stan_code, return_annot = F) {
+clean_stan <- function(stan_code, return_annot = F, R_style = T) {
   
   # Regular expressions for detecting types of lines
   declaration_regex <- "^\\s*(int|real|vector|row_vector|matrix|array)"
@@ -70,7 +70,7 @@ clean_stan <- function(stan_code, return_annot = F) {
   
   # Remove comments (text after //)
   has_comments <- grepl("//", lines)
-  annot$comments[has_comments] <- paste0("#", gsub(".*//", "", lines[has_comments]))
+  annot$comments[has_comments] <- paste0(ifelse(R_style, "#", "//"), sub(".*?// ?", "", lines[has_comments]))
   lines <- gsub("//.*", "", lines)
   
   #trim whitespace
@@ -83,10 +83,12 @@ clean_stan <- function(stan_code, return_annot = F) {
   lines <- trimws(lines)
   
   #remove one chunk of the preceding whitespace to reflect different style conventions
-  annot$leading_ws <- gsub("\t", "  ", annot$leading_ws)
-  smallest_lws <- nchar(annot$leading_ws)
-  smallest_lws <- paste0(rep(x = " ", min(smallest_lws[smallest_lws > 0])), collapse = "")
-  annot$leading_ws <- sub(smallest_lws, "", annot$leading_ws)
+  if(R_style){
+    annot$leading_ws <- gsub("\t", "  ", annot$leading_ws)
+    smallest_lws <- nchar(annot$leading_ws)
+    smallest_lws <- paste0(rep(x = " ", min(smallest_lws[smallest_lws > 0])), collapse = "")
+    annot$leading_ws <- sub(smallest_lws, "", annot$leading_ws)  
+  }
   
   # Remove empty lines
   empty_lines <- nchar(lines) == 0
@@ -96,6 +98,7 @@ clean_stan <- function(stan_code, return_annot = F) {
   el_preceding_len <- rleel$lengths[rleel$values]
   annot$n_empty_preceding[el_nextline_inds] <- el_preceding_len
   annot$preceding_content[el_nextline_inds] <- sapply(el_nextline_inds, function(i){
+    #if previous line is just whitespace sans comments, we do not need to have ws, just \n?
     prev_lines_content <- annot[(i-annot$n_empty_preceding[i]):(i-1), 
                                 c("leading_ws", "comments")]
     prev_lines_content <- apply(prev_lines_content, 1, function(x) 
@@ -120,13 +123,12 @@ clean_stan <- function(stan_code, return_annot = F) {
       
       #insert the lines
       lines <- append(lines, insert_lines, current_line)
-      insert_annot <- data.frame(do.call(rbind, 
-                              replicate(length(insert_lines), 
-                                        cbind(annot[2,"leading_ws"], 
-                                              matrix("", 1, 3)), 
-                                        simplify = F)
-      )); colnames(insert_annot) <- colnames(annot)
-      insert_annot[1,] <- annot[current_line,]
+      insert_annot <- rbind(annot[current_line,], 
+                            matrix("", length(insert_lines)-1, ncol(annot), 
+                                   dimnames = list(NULL, colnames(annot)))
+      )
+      insert_annot$leading_ws <- insert_annot$leading_ws[1]
+      insert_annot$trailing_ws <- insert_annot$trailing_ws[1]
       annot <- rbind(annot[1:current_line,], 
                      insert_annot,
                      annot[(current_line+1):nrow(annot),])
@@ -174,13 +176,14 @@ clean_stan <- function(stan_code, return_annot = F) {
       
       #insert the lines
       lines <- append(lines, insert_lines, current_line)
-      insert_annot <- data.frame(do.call(rbind, 
-                                         replicate(length(insert_lines), 
-                                                   cbind(annot[2,"leading_ws"], 
-                                                         matrix("", 1, 3)), 
-                                                   simplify = F)
-      )); colnames(insert_annot) <- colnames(annot)
-      insert_annot[1,] <- annot[current_line,]
+      
+      #modify the annotation
+      insert_annot <- rbind(annot[current_line,], 
+                            matrix("", length(insert_lines)-1, ncol(annot), 
+                                   dimnames = list(NULL, colnames(annot)))
+                            )
+      insert_annot$leading_ws <- insert_annot$leading_ws[1]
+      insert_annot$trailing_ws <- insert_annot$trailing_ws[1]
       annot <- rbind(annot[1:current_line,], 
                      insert_annot,
                      annot[(current_line+1):nrow(annot),])
@@ -211,11 +214,17 @@ clean_stan <- function(stan_code, return_annot = F) {
       
       #insert the line
       lines <- append(lines, insert_line, line_bounds[2])
-      insert_annot <- data.frame(cbind(annot[2,"leading_ws"], 
-                                       matrix("", 1, 3))); 
-      colnames(insert_annot) <- colnames(annot)
-      insert_annot[1,] <- annot[line_bounds[2],]
-      insert_annot$comments <- paste0(annot$comments[line_bounds[1]:line_bounds[2]], collapse = " ")
+      
+      #propagate later comments and preceding content
+      insert_annot <- annot[line_bounds[1],]
+      insert_annot_comments <- annot$comments[line_bounds[1]:line_bounds[2]]
+      insert_annot_comments[sapply(trimws(insert_annot_comments), nchar) > 0] <- paste0(
+        insert_annot_comments[sapply(trimws(insert_annot_comments), nchar) > 0], " "
+      )
+      insert_annot$comments <- paste0(insert_annot_comments, collapse = "")
+      insert_annot_preceding_content <- annot$preceding_content[line_bounds[1]:line_bounds[2]]
+      # insert_annot_preceding_content[sapply(trimws(insert_annot_preceding_content), nchar) > 0]
+      insert_annot$preceding_content <- paste0(insert_annot_preceding_content, collapse = "")
       annot <- rbind(annot[1:line_bounds[2],], 
                      insert_annot,
                      annot[(line_bounds[2]+1):nrow(annot),])
@@ -243,13 +252,12 @@ clean_stan <- function(stan_code, return_annot = F) {
       
       #insert the lines
       lines <- append(lines, insert_lines, current_line)
-      insert_annot <- data.frame(do.call(rbind, 
-                                         replicate(length(insert_lines), 
-                                                   cbind(annot[2,"leading_ws"], 
-                                                         matrix("", 1, 3)), 
-                                                   simplify = F)
-      )); colnames(insert_annot) <- colnames(annot)
-      insert_annot[1,] <- annot[current_line,]
+      insert_annot <- rbind(annot[current_line,], 
+                            matrix("", length(insert_lines)-1, ncol(annot), 
+                                   dimnames = list(NULL, colnames(annot)))
+      )
+      insert_annot$leading_ws <- insert_annot$leading_ws[1]
+      insert_annot$trailing_ws <- insert_annot$trailing_ws[1]
       annot <- rbind(annot[1:current_line,], 
                      insert_annot,
                      annot[(current_line+1):nrow(annot),])
@@ -260,11 +268,11 @@ clean_stan <- function(stan_code, return_annot = F) {
       
       n_lines_inserted <- n_lines_inserted + length(insert_lines) - 1
     }
-    
+    annot$curr_line <- lines
   }
   
   if(return_annot){
-    return(list(code = lines, annot = annot))  
+    return(list(code = lines, annot = annot[,c("leading_ws", "trailing_ws", "comments", "preceding_content")]))  
   } else {
     return(lines)
   }
@@ -666,9 +674,86 @@ interpret_assignment <- function(line) {
 
 
 interpret_operation <- function(stan_expression) {
-  # Replace specific Stan functions with equivalent R functions or code
-  # Example: Implementing inv_logit
-  stan_expression <- gsub("inv_logit\\(", "plogis(", stan_expression)
+  
+  #extract function calls if any exist in operation
+  functions_used <- regmatches(stan_expression, 
+                               gregexpr("\\b\\w+(?=\\()", 
+                                        stan_expression, 
+                                        perl = TRUE))[[1]]
+  function_mapping <- list(rep_vector = "rep",
+                           to_vector = "",
+                           inv_logit = "plogis")
+  
+  #check if functions are in map list or in the current environment and warn user accordingly
+  if(length(functions_used) >= 1){
+    f_in_R <- sapply(functions_used, exists, mode = "function")
+    f_in_map <- functions_used %in% names(function_mapping)
+    f_in_R_not_map <- f_in_R & !f_in_map
+    f_in_R_not_map_envirs <- sapply(functions_used[f_in_R_not_map], function(fname)
+      environmentName(environment(get(fname))))
+    f_in_R_not_map_envirs[f_in_R_not_map_envirs == ""] <- "base"
+    
+    #warnings for using R funcs in place of Stan funcs
+    if(any(f_in_R_not_map)){
+      nfunc <- sum(f_in_R_not_map)
+      if(nfunc == 1){
+        function_string_concat <- paste0("<<", functions_used[f_in_R_not_map], "()>>")
+        function_string_concat_R <- paste0("<<", f_in_R_not_map_envirs, "::", 
+                                           functions_used[f_in_R_not_map], "()>>")
+      } else if(nfunc == 2){
+        function_string_concat <- paste0("<<", functions_used[f_in_R_not_map][1], "()>> and <<",
+                                         functions_used[f_in_R_not_map][2], "()>>")
+        function_string_concat_R <- paste0("<<", f_in_R_not_map_envirs[1], "::", 
+                                           functions_used[f_in_R_not_map][1], "()>> and <<", 
+                                           f_in_R_not_map_envirs[2], "::",
+                                           functions_used[f_in_R_not_map][2], "()>>")
+      } else {
+        function_string_concat <- paste0(paste0(sapply(functions_used[f_in_R_not_map][-nfunc], 
+                                                       function(fi){paste0("<<", fi, "()>>")}), collapse = ", "), 
+                                         ", and <<", functions_used[f_in_R_not_map][nfunc], "()>>")
+        function_string_concat_R <- paste0(paste0(sapply(functions_used[f_in_R_not_map][-nfunc], 
+                                                         function(fi){
+                                                           paste0("<<", f_in_R_not_map_envirs[fi], 
+                                                                  "::", 
+                                                                  fi, 
+                                                                  "()>>")}), collapse = ", "), 
+                                           ", and <<", f_in_R_not_map_envirs[nfunc], 
+                                           "::", functions_used[f_in_R_not_map][nfunc], "()>>")
+      }
+      warning(paste0("Stan function", ifelse(nfunc>1, "s ", " "), function_string_concat, 
+                     " not found in map but found in ", environmentName(environment()), 
+                     ". Using R-function", ifelse(nfunc>1, "s ", " "), 
+                     function_string_concat_R, "in their place."))
+    }
+    
+    #warnings for not having any matching functions at all
+    f_not_anywhere <- !f_in_R & !f_in_map
+    if(any()){
+      
+      nfunc <- sum(f_not_anywhere)
+      if(nfunc == 1){
+        function_string_concat <- paste0("<<", functions_used[f_not_anywhere], "()>>")
+      } else if(nfunc == 2){
+        function_string_concat <- paste0("<<", functions_used[f_not_anywhere][1], "()>> and <<",
+                                         functions_used[f_not_anywhere][2], "()>>")
+      } else {
+        function_string_concat <- paste0(paste0(sapply(functions_used[f_not_anywhere][-nfunc], 
+                                                       function(fi){paste0("<<", fi, "()>>")}), collapse = ", "), 
+                                         ", and <<", functions_used[f_not_anywhere][nfunc], "()>>")
+      }
+      warning(paste0("Stan function", ifelse(nfunc>1, " ", "s "), function_string_concat, 
+                     " not found in map or in ", environmentName(environment()), 
+                     ". Implement before running code."))
+    }
+    
+    # Replace specific Stan functions with equivalent R functions or code
+    if(any(f_in_map)){
+      for(fi in which(f_in_map)){
+        stan_expression <- gsub(paste0(names(function_mapping[fi]), "\\("), 
+                                paste0(function_mapping[[fi]], "\\("), stan_expression)
+      }
+    }
+  }
   
   # Handle element-wise operations (*, /, +, -) - In R, these are by default element-wise
   # Stan's element-wise operations (e.g., .*) are the same as R's default, so we can remove the '.'
@@ -676,11 +761,6 @@ interpret_operation <- function(stan_expression) {
   stan_expression <- gsub("\\./", "/", stan_expression)
   stan_expression <- gsub("\\.\\+", "+", stan_expression)
   stan_expression <- gsub("\\.-", "-", stan_expression)
-  
-  # Ignore certain functions if needed, e.g., to_vector (if it's redundant in R)
-  # This can be a no-op if to_vector has no side effects in R context
-  stan_expression <- gsub("to_vector\\(", "(", stan_expression)
-  stan_expression <- gsub("rep_vector\\(", "rep\\(", stan_expression)
   
   # Return the translated stan_expression
   return(stan_expression)
@@ -865,6 +945,10 @@ generate_sampling_code <- function(line) {
   if(bounded){
     # Mapping Stan distributions to R functions for evaluating upper and lower bounds
     p_distribution_map <- distribution_maps("p")
+    if(!(distribution %in% names(p_distribution_map))){
+      warning(paste0("Distribution named <<", distribution, 
+                     ">> not found in conversion table, requiring implementation."))
+    }
     
     #evaluate quantiles of bounds
     ub_code <- p_distribution_map[[distribution]]
@@ -885,6 +969,10 @@ generate_sampling_code <- function(line) {
     
     #now find where this quantile falls in the target distribution
     q_distribution_map <- distribution_maps("q")
+    if(!(distribution %in% names(q_distribution_map))){
+      warning(paste0("Distribution named <<", distribution, 
+                     ">> not found in conversion table, requiring implementation."))
+    }
     
     inverse_transform_code <- q_distribution_map[[distribution]]
     if(parameters != ""){
@@ -903,6 +991,10 @@ generate_sampling_code <- function(line) {
   } else {
     # Mapping Stan distributions to R functions for random number gen
     r_distribution_map <- distribution_maps("r")
+    if(!(distribution %in% names(r_distribution_map))){
+      warning(paste0("Distribution named <<", distribution, 
+                     ">> not found in conversion table, requiring implementation."))
+    }
     
     # Generate R code for sampling
     r_function <- r_distribution_map[[distribution]]
@@ -935,6 +1027,10 @@ generate_density_code <- function(line, dat) {
   
   # Mapping Stan distributions to R density/mass functions
   d_distribution_map <- distribution_maps("d")
+  if(!(distribution %in% names(d_distribution_map))){
+    warning(paste0("Distribution named <<", distribution, 
+                   ">> not found in conversion table, requiring implementation."))
+  }
   
   # Generate R code for density/mass calculation
   r_function <- d_distribution_map[[distribution]]
@@ -953,6 +1049,10 @@ generate_density_code <- function(line, dat) {
     #transform density or mass to respect bounds (ie, multiply by the total slice of probability in the distribution)
     if(bounded){
       p_distribution_map <- distribution_maps("p")
+      if(!(distribution %in% names(p_distribution_map))){
+        warning(paste0("Distribution named <<", distribution, 
+                       ">> not found in conversion table, requiring implementation."))
+      }
       
       #evaluate quantiles of bounds
       ub_code <- p_distribution_map[[distribution]]
@@ -1220,15 +1320,34 @@ loop_over_param <- function(var_name, dims, set_as = 1) {
 
 
 flatten_model <- function(stan_code, scale_identifier = "sd_", set_as = 1, put_params_in_data = F){
+  
   #this function parses a Stan model, identifies scale parameters,
   #and sets them all to 1 (or whatever is in <set_as>), instead of sampling
+  #alternatively, if put_params_in_data = T, it includes those parameters in the data block
   
   #some basic pre-processing
-  block_contents <- parse_stan_blocks(clean_stan(stan_code))
+  clean_stan_info <- clean_stan(stan_code, return_annot = T, R_style = F)
+  stan_annot <- clean_stan_info$annot
+  
+  #retrieve blocks and modify annotation
+  block_contents_info <- parse_stan_blocks(clean_stan_info$code, return_annot_mod = T)
+  block_contents <- block_contents_info$block_contents
+  stan_annot <- stan_annot[-block_contents_info$block_mod,]
   block_contents <- block_contents[sapply(block_contents, length) > 0]
+  
+  #parse block content and retrieve all declared params
   parsed_lines <- lapply(block_contents, parse_stan_lines)
   all_params <- data.frame(name = parsed_lines$parameters$var_name, 
                            dim = parsed_lines$parameters$dimensions)
+  
+  #combine parsed_lines with annotation 
+  #(should have done this in parse_Stan whoops, will refactor later)
+  nlines_per_block <- unlist(lapply(parsed_lines, nrow))
+  block_starts <- cumsum(c(1, nlines_per_block[-length(nlines_per_block)]))
+  names(block_starts) <- names(nlines_per_block)
+  parsed_lines <- lapply(setNames(seq_along(parsed_lines), names(parsed_lines)), function(i){
+    cbind(parsed_lines[[i]], stan_annot[block_starts[i]:(block_starts[i] + nlines_per_block[i] - 1),])
+  })
   
   #ID lines to modify
   scale_declaration_inds <- grepl(pattern = scale_identifier, all_params$name) &
@@ -1243,6 +1362,7 @@ flatten_model <- function(stan_code, scale_identifier = "sd_", set_as = 1, put_p
     new_lines$data <- rbind(new_lines$data, new_lines$parameters[scale_declaration_inds,])
     new_lines$parameters <- new_lines$parameters[!scale_declaration_inds,]
     new_lines$model <- new_lines$model[!scale_sampling_inds,]
+    
   } else {
     if(length(set_as) == 1){
       new_declarations <- character(length(scale_params$name))
@@ -1253,7 +1373,8 @@ flatten_model <- function(stan_code, scale_identifier = "sd_", set_as = 1, put_p
         })  
       }
       constrain_free_declarations <- gsub("<[^>]*>", "", parsed_lines$parameters$line[scale_declaration_inds])
-      new_declarations <- paste0(constrain_free_declarations, "\n",
+      new_declarations <- paste0(constrain_free_declarations, "\n", 
+                                 parsed_lines$parameters$leading_ws[scale_declaration_inds],
                                  new_declarations)  
     } else {
       new_declarations <- setNames(character(length(scale_params$name)), scale_params$name)
@@ -1264,27 +1385,35 @@ flatten_model <- function(stan_code, scale_identifier = "sd_", set_as = 1, put_p
         })  
       }
       constrain_free_declarations <- gsub("<[^>]*>", "", parsed_lines$parameters$line[scale_declaration_inds])
-      new_declarations <- paste0(constrain_free_declarations, "\n",
+      
+      new_declarations <- paste0(constrain_free_declarations, "\n", 
+                                 parsed_lines$parameters$leading_ws[scale_declaration_inds],
                                  new_declarations)
     }
     
     #integrate into the original program
     new_lines <- parsed_lines
     new_lines$parameters$line[scale_declaration_inds] <- paste0("// ", 
-                                                                new_lines$parameters$line[scale_declaration_inds])
+              new_lines$parameters$line[scale_declaration_inds])
     new_lines$model$line[scale_sampling_inds] <- new_declarations
   }
   
-
+  #create new lines inside blocks
+  for(block_name in names(new_lines)){
+    new_lines[[block_name]]$new_line <- paste0(new_lines[[block_name]]$preceding_content, 
+                                                 new_lines[[block_name]]$leading_ws, 
+                                                 new_lines[[block_name]]$line,
+                                                 new_lines[[block_name]]$trailing_ws, 
+                                                 new_lines[[block_name]]$comments)
+  }
+  
+  #construct new block text
   new_stan_code <- lapply(names(new_lines), function(block_name){
     paste0(block_name, " {\n", 
-           paste0("\t", gsub(pattern = "\n", 
-                             replacement = "\n\t", 
-                             new_lines[[block_name]]$line), 
-                  collapse = "\n"), 
+           paste0(new_lines[[block_name]]$new_line, collapse = "\n"), 
            "\n}")
   })
-  new_stan_code <- paste0(unlist(new_stan_code), collapse = "\n")
+  new_stan_code <- paste0(unlist(new_stan_code), collapse = "\n\n")
   new_stan_code
 }
 
