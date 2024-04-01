@@ -688,6 +688,7 @@ interpret_operation <- function(stan_expression) {
   if(length(functions_used) >= 1){
     f_in_R <- sapply(functions_used, exists, mode = "function")
     f_in_map <- functions_used %in% names(function_mapping)
+    f_not_anywhere <- !f_in_R & !f_in_map
     f_in_R_not_map <- f_in_R & !f_in_map
     f_in_R_not_map_envirs <- sapply(functions_used[f_in_R_not_map], function(fname)
       environmentName(environment(get(fname))))
@@ -721,14 +722,13 @@ interpret_operation <- function(stan_expression) {
                                            "::", functions_used[f_in_R_not_map][nfunc], "()>>")
       }
       warning(paste0("Stan function", ifelse(nfunc>1, "s ", " "), function_string_concat, 
-                     " not found in map but found in ", environmentName(environment()), 
-                     ". Using R-function", ifelse(nfunc>1, "s ", " "), 
-                     function_string_concat_R, "in their place."))
+                     " not found in map but found in R_GlobalEnv. Using R-function", 
+                     ifelse(nfunc>1, "s ", " "), 
+                     function_string_concat_R, " in their place."))
     }
     
     #warnings for not having any matching functions at all
-    f_not_anywhere <- !f_in_R & !f_in_map
-    if(any()){
+    if(any(f_not_anywhere)){
       
       nfunc <- sum(f_not_anywhere)
       if(nfunc == 1){
@@ -742,15 +742,14 @@ interpret_operation <- function(stan_expression) {
                                          ", and <<", functions_used[f_not_anywhere][nfunc], "()>>")
       }
       warning(paste0("Stan function", ifelse(nfunc>1, " ", "s "), function_string_concat, 
-                     " not found in map or in ", environmentName(environment()), 
-                     ". Implement before running code."))
+                     " not found in map or in R_GlobalEnv. Implement before running code."))
     }
     
     # Replace specific Stan functions with equivalent R functions or code
     if(any(f_in_map)){
       for(fi in which(f_in_map)){
-        stan_expression <- gsub(paste0(names(function_mapping[fi]), "\\("), 
-                                paste0(function_mapping[[fi]], "\\("), stan_expression)
+        stan_expression <- gsub(paste0(functions_used[fi], "\\("), 
+                                paste0(function_mapping[[functions_used[fi]]], "\\("), stan_expression)
       }
     }
   }
