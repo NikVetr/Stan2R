@@ -4,7 +4,7 @@ Stan2R is a set of utilities I wrote to help convert [Stan](https://mc-stan.org/
 
 I've also used some of the underlying functions to piece together other utilities, like `flatten_model()`, which takes a conventional multilevel model and converts it to a single-level model according to supplied arguments, either for when we're optimistic and want to troubleshoot pathological posteriors (eg to fix topologically troublesome hyperparameters and determine if they're driving our faulty fits) or for when we're pessimistic and just want to Empirical Bayes things.
 
-Also, collaborators are often unfamiliar with Stan, but were familiar with R. To help them understand a Stan model, I can trivially convert it to interactive R code for ease of exploration and intuition-building.
+Also, collaborators are often unfamiliar with Stan, but are familiar with R. To help them understand a Stan model, I can trivially convert it to interactive R code for ease of exploration and intuition-building.
 
 NOTE: do make sure to inspect any outputted R code for errors. I mostly wrote it with my own style preferences in mind, which may not match your own. I also did not exhaustively implement conversions for all Stan functions or distributions, or even for all features of Stan code (eg custom functions). Depending on the inputted model, you may have to modify converted scripts.
 

@@ -503,7 +503,6 @@ parse_lpmf_lpdf <- function(line) {
   # Check if there's a mixture probability component
   if (grepl("\\+", rhs)) {
     mixture_probability <- sub("\\s*\\+\\s*\\w+_lp(mf|df).*", "", rhs)
-    mixture_probability <- sub("log\\s*\\((.+)\\)", "\\1", mixture_probability)
   }
   
   # Process the _lpmf or _lpdf call
@@ -1151,7 +1150,16 @@ interpret_lpmf_lpdf <- function(line, dat, samps, sample_index = 1, post_pred_si
     }
     
     # Generate R code for mixture probability and component
-    mixture_prob_code <- interpret_operation(line$mixture_probability)
+    
+    #if log prob was pre-computed, wrap in exp(); if not, remove log()
+    if(grepl(pattern = "log\\(", x = line$mixture_probability)){
+      mixture_probability <- sub("log\\s*\\((.+)\\)", "\\1", line$mixture_probability)
+    } else {
+      mixture_probability <- paste0("exp(", line$mixture_probability, ")")
+    }
+    
+    #now compile the corresponding probability expression
+    mixture_prob_code <- interpret_operation(mixture_probability)
     component_code <- interpret_sampling(line = sampling_line, dat, samps, sample_index, post_pred_sim = F, sim = sim, bound_declarations)
     
     

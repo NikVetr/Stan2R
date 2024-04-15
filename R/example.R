@@ -44,7 +44,6 @@ r_code <- parse_Stan(stan_code,
                      sample_index = NA, 
                      post_pred_sim = F, 
                      sim = TRUE)
-cat(r_code)
 
 #evaluate code
 stan_env <- new.env()
@@ -196,8 +195,6 @@ if((dim_param_fig^2-dim_param_fig) > length(unobs_var_names)){
 png(filename = paste0(stan_figure_dir, "parameter_goodness-of-fit.png"), width = dim_param_fig[2] * 500, height = dim_param_fig[1] * 500, pointsize = 22)
 par(mar = c(5,5,3.5,2), mfrow = dim_param_fig)
 for(uv_name in unobs_var_names){
-  
-  
   
   if(length(unobs_vars[[uv_name]]) == 1){
     varlims <- range(c(post_pred_dists_unobs_vars[[uv_name]], unobs_vars[[uv_name]]))
