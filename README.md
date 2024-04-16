@@ -69,6 +69,14 @@ git clone https://github.com/NikVetr/Stan2R.git
 
 Please see `R/example.R` for example usage -- you're probably best served by modifying that script for your own use. If things don't work, feel free to reach out and I'll do my best to help.
 
+## Future Updates
+
+Besides general tweaking and testing for usability, there are a few more features I'm working on incorporating here, such as:
+
+- **Pathology Diagnosis**: After computing the model graph, identify which intermediate variables are responsible for failures in MCMC diagnostics, allowing for targeted model restructuring.
+- **Model-Based Outlier Calling**: Aggregating posterior predictive densities / masses at different levels using flexible regression and classification tools, to see where the model is doing a poor job at capturing interdependence between both included and excluded variables. This can be used to tweak the model, or else provide a principled framework for multivariate outlier calling that can obviate uncertainties in deciding on an appropriate stratification strategy. 
+- **Automated Reparameterization**: For model parameters exhibiting MCMC pathology, generating equivalent partially centered or uncentered forms of those models.
+
 ## Contributing
 
 Contributions or extensions to this program are welcome! If you have suggestions for improvements or new features, please feel free to fork the repository and submit a pull request.
