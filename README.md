@@ -71,11 +71,12 @@ Please see `R/example.R` for example usage -- you're probably best served by mod
 
 ## Future Updates
 
-Besides general tweaking and testing for usability, there are a few more features I'm working on incorporating here, such as:
+Besides general tweaking and testing for usability (eg expanding the range of converted Stan functions, robustness to coding styles and syntax unlike my own), there are a few more features I'm working on incorporating here, such as:
 
-- **Pathology Diagnosis**: After computing the model graph, identify which intermediate variables are responsible for failures in MCMC diagnostics, allowing for targeted model restructuring.
+- **MCMC Pathology Diagnosis**: After computing the model graph, identify which intermediate variables are responsible for failures in MCMC diagnostics, allowing for targeted model restructuring.
 - **Model-Based Outlier Calling**: Aggregating posterior predictive densities / masses at different levels using flexible regression and classification tools, to see where the model is doing a poor job at capturing interdependence between both included and excluded variables. This can be used to tweak the model, or else provide a principled framework for multivariate outlier calling that can obviate uncertainties in deciding on an appropriate stratification strategy. 
-- **Automated Reparameterization**: For model parameters exhibiting MCMC pathology, generating equivalent partially centered or uncentered forms of those models.
+- **Automated Reparameterization**: For model parameters exhibiting MCMC pathology, generating equivalent partially centered or uncentered forms of those models in an automated fashion, integrating with semi-automated exploration of alternative parameterizations during warmup.
+- **Extensions to Other Languages**: Eventually generating code for equivalent models for fitting elsewhere, like PyMC or Turing.
 
 ## Contributing
 
