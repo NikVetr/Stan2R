@@ -77,6 +77,7 @@ Besides general tweaking and testing for usability (eg expanding the range of co
 - **Model-Based Outlier Calling**: Aggregating posterior predictive densities / masses at different levels using flexible regression and classification tools, to see where the model is doing a poor job at capturing interdependence between both included and excluded variables. This can be used to tweak the model, or else provide a principled framework for multivariate outlier calling that can obviate uncertainties in deciding on an appropriate stratification strategy. 
 - **Automated Reparameterization**: For model parameters exhibiting MCMC pathology, generating equivalent partially centered or uncentered forms of those models in an automated fashion, integrating with semi-automated exploration of alternative parameterizations during warmup.
 - **Extensions to Other Languages**: Eventually generating code for equivalent models for fitting elsewhere, like PyMC or Turing.
+- **Improved Model Visualization**: Two in-progress ideas here: 1. a conversion from Stan to LaTeX (and R expression) for potentially easier readability (incl. automatic conversions for glyphs and subscripts), and 2. flowchart generation from Stan code, drawing marginal posterior and prior histograms / KDEs for model variables (with higher dimensional objects drawn as multiple lines on the sample panel)
 
 ## Contributing
 
