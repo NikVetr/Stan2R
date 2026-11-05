@@ -50,7 +50,7 @@ test_that("discrete masses sum to one and match their CDFs and quantiles", {
     args <- dist_test_args[[nm]]
     d <- dist_fn(nm, "d", args, env)
     s <- dist_test_support(nm, def, args)
-    ys <- s[1]:min(s[2], 200)
+    ys <- s[1]:min(s[2], 10000)
     pm <- exp(d(ys))
     expect_equal(sum(pm), 1, tolerance = 1e-8, info = nm)
     if (!is.null(def$p)) expect_equal(dist_fn(nm, "p", args, env)(ys), cumsum(pm), tolerance = 1e-8, info = nm)
@@ -74,7 +74,7 @@ test_that("random draws follow the density (KS / chi-square)", {
     d <- dist_fn(nm, "d", args, env)
     if (def$discrete) {
       s <- dist_test_support(nm, def, args)
-      ys <- s[1]:min(s[2], 200)
+      ys <- s[1]:min(s[2], 10000)
       expected <- exp(d(ys)) * length(x)
       keep <- expected > 5
       observed <- vapply(ys[keep], function(k) sum(x == k), 0)

@@ -10,7 +10,9 @@ draw_columns_pattern <- function(var_name) {
 #' @export
 subset_samps <- function(var_name, samps) {
   cols <- grep(draw_columns_pattern(var_name), names(samps), value = TRUE)
-  as.data.frame(samps)[, cols, drop = FALSE]
+  out <- lapply(cols, function(cl) samps[[cl]])
+  names(out) <- cols
+  as.data.frame(out, check.names = FALSE)
 }
 
 # parse "theta[2,1]" / "theta.2.1." into an integer matrix of indices (one row per column)
@@ -54,10 +56,10 @@ munge_samps <- function(var_name, df) {
 
 # R literal for a parameter's value in draw `sample_index`
 draw_value_code <- function(samps, sample_index, name, decl, ctx) {
-  df <- subset_samps(name, samps)
-  if (ncol(df) == 0) stop(sprintf("Stan2R: parameter '%s' (line %d) not found in samps", name, decl$line), call. = FALSE)
-  if (sample_index < 1 || sample_index > nrow(df)) stop("Stan2R: sample_index ", sample_index, " is outside samps", call. = FALSE)
-  value <- munge_samps(name, df[sample_index, , drop = FALSE])
+  cols <- grep(draw_columns_pattern(name), names(samps), value = TRUE)
+  if (!length(cols)) stop(sprintf("Stan2R: parameter '%s' (line %d) not found in samps", name, decl$line), call. = FALSE)
+  if (sample_index < 1 || sample_index > nrow(samps)) stop("Stan2R: sample_index ", sample_index, " is outside samps", call. = FALSE)
+  value <- shape_draw(name, vapply(cols, function(cl) as.numeric(samps[[cl]][sample_index]), 0), cols)
   rank <- length(decl$stype$array_dims) + length(decl$stype$dims)
   r_literal(value, rank)
 }

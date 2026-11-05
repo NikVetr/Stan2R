@@ -68,6 +68,16 @@ plaplace <- function(q, mu, sigma) ifelse(q < mu, 0.5 * exp((q - mu) / sigma), 1
   qlaplace = list(code = '
 qlaplace <- function(p, mu, sigma) ifelse(p < 0.5, mu + sigma * log(2 * p), mu - sigma * log(2 - 2 * p))'),
 
+  pskew_double_exponential = list(code = '
+pskew_double_exponential <- function(y, mu, sigma, tau) {
+  ifelse(y < mu, tau * exp(-2 * (1 - tau) * (mu - y) / sigma), 1 - (1 - tau) * exp(-2 * tau * (y - mu) / sigma))
+}'),
+
+  qskew_double_exponential = list(code = '
+qskew_double_exponential <- function(p, mu, sigma, tau) {
+  ifelse(p < tau, mu + sigma / (2 * (1 - tau)) * log(p / tau), mu - sigma / (2 * tau) * log((1 - p) / (1 - tau)))
+}'),
+
   dexp_mod_normal = list(code = '
 dexp_mod_normal <- function(y, mu, sigma, lambda) {
   log(lambda) + lambda * (mu + 0.5 * lambda * sigma^2 - y) +
@@ -265,6 +275,34 @@ dinv_wishart <- function(W, nu, Sigma) {
   K <- nrow(W)
   dwishart(solve(W), nu, solve(Sigma)) - (K + 1) * as.numeric(determinant(W)$modulus)
 }', needs = "dwishart"),
+
+  rtruncated = list(code = '
+# draws restricted to [lower, upper] by inverse-CDF sampling on the log scale, using
+# whichever tail keeps precision; cdf/quantile accept lower.tail and log.p
+rtruncated <- function(n, cdf, quantile, lower, upper) {
+  u <- runif(n)
+  ll <- cdf(lower, log.p = TRUE)
+  lu <- cdf(upper, log.p = TRUE)
+  sl <- cdf(lower, lower.tail = FALSE, log.p = TRUE)
+  su <- cdf(upper, lower.tail = FALSE, log.p = TRUE)
+  suppressWarnings({
+    from_lower <- quantile(lu + log(exp(ll - lu) - u * expm1(ll - lu)), log.p = TRUE)
+    from_upper <- quantile(sl + log1p(u * expm1(su - sl)), lower.tail = FALSE, log.p = TRUE)
+  })
+  out <- ifelse(ll > log(0.5), from_upper, from_lower)
+  if (any(!is.finite(out))) stop("rtruncated: the truncation interval has zero probability")
+  out
+}'),
+
+  log_truncated_mass = list(code = '
+# log probability of [lower, upper], computed in the more precise tail
+log_truncated_mass <- function(cdf, lower, upper) {
+  ll <- cdf(lower, log.p = TRUE)
+  lu <- cdf(upper, log.p = TRUE)
+  sl <- cdf(lower, lower.tail = FALSE, log.p = TRUE)
+  su <- cdf(upper, lower.tail = FALSE, log.p = TRUE)
+  ifelse(ll > log(0.5), sl + log1p(-exp(su - sl)), lu + log1p(-exp(ll - lu)))
+}'),
 
   rtruncated_reject = list(code = '
 # draws from a distribution restricted to [lower, upper] by rejection

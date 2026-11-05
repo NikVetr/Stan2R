@@ -10,7 +10,7 @@ dist_fn <- function(name, which, args, env = dist_env()) {
   vals <- lapply(args, function(a) deparse(a))
   names(vals) <- def$args
   var <- switch(which, r = "n", d = "y", p = "y", q = "p")
-  extra <- switch(which, r = list(n = "n"), d = list(y = "y"), p = list(y = "y", opts = ""), q = list(p = "p"))
+  extra <- switch(which, r = list(n = "n"), d = list(y = "y"), p = list(y = "y", opts = ""), q = list(p = "p", opts = ""))
   code <- Stan2R:::fill_template(def[[which]], c(vals, extra))
   f <- eval(parse(text = paste0("function(", var, ") ", code)))
   environment(f) <- env
@@ -29,7 +29,7 @@ dist_test_args <- list(
   bernoulli = list(0.3), bernoulli_logit = list(-0.5), binomial = list(10, 0.3), binomial_logit = list(10, 0.4),
   beta_binomial = list(12, 2, 3), hypergeometric = list(5, 7, 8), poisson = list(3.5), poisson_log = list(1.2),
   neg_binomial = list(3, 0.5), neg_binomial_2 = list(4, 2), neg_binomial_2_log = list(1.1, 3),
-  discrete_range = list(2, 7)
+  discrete_range = list(2, 7), beta_neg_binomial = list(4, 3, 2), skew_double_exponential = list(1, 2, 0.3)
 )
 
 # support used for numerical checks

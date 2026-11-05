@@ -39,7 +39,8 @@ test_that("bounded priors are truncated, and student_t keeps location and scale"
   code <- "parameters { real<lower=0> s; real<lower=1, upper=3> u; real t; }
            model { s ~ student_t(3, 0, 2.5); u ~ normal(0, 5); t ~ student_t(5, 10, 0.1); }"
   lines <- code_lines(tr(code))
-  expect_true(any(grepl("^s <- 0 \\+ 2.5 \\* qt\\(", lines)))
+  expect_true("s <- abs(0 + 2.5 * rt(1, 3))" %in% lines)
+  expect_true("u <- rtruncated(1, function(q, ...) pnorm(q, 0, 5, ...), function(p, ...) qnorm(p, 0, 5, ...), 1, 3)" %in% lines)
   draws <- replicate(2000, unlist(run_code(tr(code), list(), seed = NULL)))
   expect_true(all(draws["s", ] > 0))
   expect_true(all(draws["u", ] > 1 & draws["u", ] < 3))
@@ -111,8 +112,39 @@ test_that("user-defined functions, _rng and derived draws", {
   dat <- list(N = 4000, y = rep(0, 4000), b = rep(0L, 4000))
   code <- parse_Stan(stan_code, dat = dat, post_pred_sim = FALSE)
   expect_match(code, "two_normals_draw__ <- function(y, w, m)", fixed = TRUE)
-  expect_match(code, "m <- shifted_exp_rng(0.5, 2)", fixed = TRUE)
+  expect_match(code, "m <- rtruncated_reject(1, function(n) shifted_exp_rng(0.5, 2), 0, Inf)", fixed = TRUE)
   out <- run_code(code, dat)
   expect_gt(out$m, 0.5)
   expect_equal(mean(out$y < 0), 0.3 * pnorm(out$m) + 0.7 * pnorm(-out$m), tolerance = 0.05)
+})
+
+test_that("affine left-hand sides are inverted, with Jacobians and bounds", {
+  skip_if_no_stanc()
+  stan_code <- readLines(model_path("syn_affine"))
+  dat <- list(N = 3, s2 = c(1, 2, 3), nu = 4)
+  expect_warning(code <- stan2r(stan_program(stan_code), "prior_predictive", dat = dat), "parameter-dependent factor")
+  draws <- replicate(3000, unlist(run_code(code, dat, seed = NULL)[c("r", "theta", "sigma")]))
+  expect_true(all(abs(draws["r", ]) < 1))
+  expect_true(all(draws[2:4, ] > 0 & draws[2:4, ] < 1))
+  expect_equal(unname(quantile(draws["r", ], c(0.1, 0.5, 0.9))), 2 * qbeta(c(0.1, 0.5, 0.9), 2, 2) - 1, tolerance = 0.05)
+  dens_code <- suppressWarnings(stan2r(stan_program(stan_code), "posterior_density", dat = dat,
+                                       samps = data.frame(r = 0, `theta[1]` = 0.5, `theta[2]` = 0.5, `theta[3]` = 0.5,
+                                                          sigma = 1.5, check.names = FALSE)))
+  out <- run_code(dens_code, dat)
+  x <- 4 * dat$s2 / 1.5^2
+  expect_equal(out$s2, dchisq(x, 4) * 4 / 1.5^2)
+})
+
+test_that("likelihood terms reached through local variables are not dropped", {
+  skip_if_no_stanc()
+  code <- "data { int N; vector[N] y; } parameters { real mu; }
+           model { mu ~ normal(0, 1); { vector[N] ll; for (n in 1:N) ll[n] = -0.5 * square(y[n] - mu); target += sum(ll); } }"
+  err <- tryCatch(tr(code, "posterior_density", samps = data.frame(mu = 0)), error = function(e) e)
+  expect_s3_class(err, "stan2r_unsupported")
+  expect_equal(err$construct, "free-form target increment")
+  code_tp <- "data { int N; vector[N] y; } parameters { real mu; } transformed parameters { vector[N] r = y - mu; }
+              model { mu ~ normal(0, 1); r ~ normal(0, 1); }"
+  err <- tryCatch(tr(code_tp, "posterior_predictive", samps = data.frame(mu = 0)), error = function(e) e)
+  expect_s3_class(err, "stan2r_unsupported")
+  expect_match(conditionMessage(err), "computed from observed data")
 })

@@ -1,0 +1,24 @@
+data {
+  int<lower=1> J;
+  int<lower=1> N;
+  array[N] int<lower=1, upper=J> g;
+}
+parameters {
+  real mu;
+  real log_tau;
+  vector[J] z;
+  real<lower=0> sigma;
+  vector[N] y_raw;  // outcome moved from data, non-centred
+}
+transformed parameters {
+  real<lower=0> tau = exp(log_tau);
+  vector[J] theta = mu + tau * z;
+  vector[N] y = theta[g] + sigma * y_raw;
+}
+model {
+  mu ~ normal(0, 5);
+  log_tau ~ normal(-1, 0.5);
+  z ~ std_normal();
+  sigma ~ lognormal(0, 0.5);
+  y_raw ~ std_normal();
+}

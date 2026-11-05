@@ -123,6 +123,8 @@ new_translation_context <- function(program, mode, dat, samps, sample_index) {
   ctx$improper <- list()
   ctx$derived_outcome <- NULL
   ctx$observed <- character(0)
+  ctx$observed_dependent <- character(0)
+  ctx$data_dependent <- character(0)
   ctx$accumulators <- list()
   sy <- program$symbols
   ctx$sym <- if (nrow(sy)) setNames(lapply(seq_len(nrow(sy)), function(i) as.list(sy[i, ])), sy$name) else list()
@@ -201,7 +203,7 @@ analyse_model <- function(ctx) {
   model <- ctx$program$blocks$model
   outcomes <- character(0)
   note_outcome <- function(e) {
-    b <- outcome_base(e)
+    b <- sampled_base(e, ctx)
     if (!is.null(b)) outcomes <<- c(outcomes, b)
   }
   walk_stmts(model, function(s) {
@@ -213,7 +215,11 @@ analyse_model <- function(ctx) {
   ctx$observed <- names(roles)[roles %in% c("data", "tdata")]
   ctx$drawn_params <- names(roles)[roles == "param"]
 
-  ctx$accumulators <- find_accumulators(model, acc_targets)
+  ctx$accumulators <- find_accumulators(model, acc_targets, ctx)
+  tp_model <- c(ctx$program$blocks[["transformed parameters"]], model)
+  ctx$observed_dependent <- observed_dependent(tp_model, ctx)
+  data_names <- names(ctx$sym)[vapply(ctx$sym, function(x) x$role %in% c("data", "tdata"), logical(1))]
+  ctx$data_dependent <- observed_dependent(tp_model, ctx, from = data_names)
   invisible(NULL)
 }
 
@@ -248,7 +254,7 @@ tr_stmt_annotated <- function(s, ctx, depth) {
 
 tr_body <- function(s, ctx, depth) {
   if (identical(s$node, "Block")) {
-    c(tr_stmts(s$stmts, ctx, depth), comment_lines(s$closing_comments, depth))
+    c(tr_stmts(schedule_block(s$stmts, ctx), ctx, depth), comment_lines(s$closing_comments, depth))
   } else {
     tr_stmt_annotated(s, ctx, depth)
   }
@@ -273,7 +279,7 @@ tr_stmt <- function(s, ctx, depth) {
     While = c(paste0(i, "while (", translate_expr(s$cond, ctx)$code, ") {"),
               tr_body(s$body, ctx, depth + 1), paste0(i, "}")),
     If = tr_if(s, ctx, depth),
-    Block = c(tr_stmts(s$stmts, ctx, depth), comment_lines(s$closing_comments, depth)),
+    Block = c(tr_stmts(schedule_block(s$stmts, ctx), ctx, depth), comment_lines(s$closing_comments, depth)),
     Profile = c(paste0(i, "# profile(\"", s$name, "\")"), tr_stmts(s$stmts, ctx, depth)),
     Print = if (length(ir_find(s$items, function(n) n$node == "GetTarget"))) {
       paste0(i, "# (print of target() omitted: ", stan_stmt_text(s, ctx), ")")
@@ -480,10 +486,10 @@ sampling_action <- function(role, ctx) {
 
 tr_sampling <- function(s, ctx, depth, outcome, dist, origin, suffix, args, truncation) {
   i <- ind(depth)
-  base <- outcome_base(outcome)
+  base <- sampled_base(outcome, ctx)
   if (is.null(base)) {
     deps <- expr_vars(outcome)
-    if (ctx$posterior && !any(deps %in% ctx$observed)) {
+    if (ctx$posterior && !any(deps %in% ctx$observed_dependent)) {
       return(paste0(i, "# (prior term on an expression, fixed by the posterior draw: ", stan_stmt_text(s, ctx), ")"))
     }
     stan2r_unsupported(sprintf("sampling statement with an expression on the left-hand side (%s)",
@@ -491,6 +497,10 @@ tr_sampling <- function(s, ctx, depth, outcome, dist, origin, suffix, args, trun
   }
   role <- sym_role(ctx, base)
   action <- sampling_action(role, ctx)
+  if (action == "skip" && role != "param" && base %in% c(ctx$observed_dependent, ctx$data_dependent)) {
+    stan2r_unsupported(sprintf("sampling statement on '%s', which is computed from observed data", base),
+                       s$line, "~ on derived quantity")
+  }
   if (action == "skip") {
     return(paste0(i, "# (prior, fixed by the posterior draw: ", stan_stmt_text(s, ctx), ")"))
   }
@@ -505,34 +515,53 @@ tr_sampling <- function(s, ctx, depth, outcome, dist, origin, suffix, args, trun
     return(paste0(i, draw$lhs, " <- ", draw$rhs))
   }
   density_code <- sampling_density_code(outcome, dist, origin, suffix, args, truncation, ctx)
-  ol <- outcome_lvalue(outcome, ctx)
+  ol <- outcome_lvalue(sampled_target(outcome, ctx), ctx)
   target <- paste0("log_density__$", base, substring(ol$fill, nchar(r_name(base)) + 1))
   paste0(i, target, " <- add_log_density(", target, ", ", density_code, ")")
 }
 
 # R code drawing `outcome` from a distribution; returns list(lhs, rhs)
 sampling_draw_code <- function(outcome, dist, origin, args, truncation, ctx, implicit_bounds = FALSE) {
-  ol <- outcome_lvalue(outcome, ctx)
+  aff <- affine_outcome(outcome, ctx)
+  ol <- outcome_lvalue(if (is.null(aff)) outcome else aff$target, ctx)
   lhs <- ol$code
   rank <- type_rank(outcome$type)
-  base <- outcome_base(outcome)
+  base <- outcome_base(ol$target)
+  if (!is.null(aff) && origin == "UserDefined") {
+    stan2r_unsupported("user-defined distribution on an expression", ctx$line, "expression on left of ~")
+  }
+  if (!is.null(aff)) warn_affine_jacobian(aff, outcome, ctx)
   if (ol$reshaped && any(vapply(args, function(a) type_rank(a$type) > 0, logical(1))) &&
       ol$target$type$adims >= 1 && type_rank(ol$target$type) >= 2) {
     stan2r_unsupported(sprintf("%s of a multi-dimensional array with element-specific arguments", stan_expr_text(outcome)),
                        ctx$line, "reshaped outcome of an array")
   }
   if (origin == "UserDefined") {
-    rng <- paste0(dist, "_rng")
-    if (is.null(ctx$program$functions[[rng]])) {
-      if (!is.null(truncation)) stan2r_unsupported("truncation of a user-defined distribution", ctx$line, "truncation")
-      fn <- derive_udf_draw(dist, ctx)
-      vals <- vapply(args, function(a) translate_expr(a, ctx)$code, "")
-      return(list(lhs = ol$fill, rhs = paste0(fn, "(", paste(c(lhs, vals), collapse = ", "), ")")))
-    }
     if (!is.null(truncation)) stan2r_unsupported("truncation of a user-defined distribution", ctx$line, "truncation")
-    ctx$user_calls <- unique(c(ctx$user_calls, rng))
+    rng <- paste0(dist, "_rng")
     vals <- vapply(args, function(a) translate_expr(a, ctx)$code, "")
-    return(list(lhs = ol$fill, rhs = paste0(rng, "(", paste(vals, collapse = ", "), ")")))
+    if (is.null(ctx$program$functions[[rng]])) {
+      rhs <- paste0(derive_udf_draw(dist, ctx), "(", paste(c(lhs, vals), collapse = ", "), ")")
+    } else {
+      ctx$user_calls <- unique(c(ctx$user_calls, rng))
+      rhs <- paste0(rng, "(", paste(vals, collapse = ", "), ")")
+    }
+    # a bounded parameter is drawn from the user distribution restricted to its bounds
+    sym <- ctx$sym[[base]]
+    tr <- if (!is.null(sym) && implicit_bounds) sym$decl$transform else list(kind = "none")
+    if (tr$kind == "bounds") {
+      if (ol$reshaped || identical(outcome$node, "Index")) {
+        stan2r_unsupported("user-defined distribution on an indexed bounded parameter", ctx$line, "bounded user-defined prior")
+      }
+      bounds <- list(lower = tr$lower, upper = tr$upper)
+      check_implicit_truncation(list(name = dist), args, bounds, base, ctx)
+      ctx_use_helper(ctx, "rtruncated_reject")
+      n <- if (rank == 0) "1" else paste0("length(", lhs, ")")
+      rhs <- paste0("rtruncated_reject(", n, ", function(n) ", rhs, ", ",
+                    if (is.null(tr$lower)) "-Inf" else translate_expr(tr$lower, ctx)$code, ", ",
+                    if (is.null(tr$upper)) "Inf" else translate_expr(tr$upper, ctx)$code, ")")
+    }
+    return(list(lhs = ol$fill, rhs = rhs))
   }
   if (is.null(stan_distributions()[[dist]]) && is.na(stan_glm_distributions[dist])) {
     stan2r_unsupported(sprintf("distribution %s", dist), ctx$line, paste0("distribution ", dist))
@@ -543,7 +572,7 @@ sampling_draw_code <- function(outcome, dist, origin, args, truncation, ctx, imp
   if (isTRUE(da$def$multivariate)) {
     if (!is.null(truncation)) stan2r_unsupported("truncation of a multivariate distribution", ctx$line, "truncation")
     check_constraint_match(transform$kind, da$name, ctx, base)
-    if (ol$reshaped) stan2r_unsupported("reshaped outcome of a multivariate distribution", ctx$line, "reshaped outcome")
+    if (ol$reshaped || !is.null(aff)) stan2r_unsupported("reshaped or transformed outcome of a multivariate distribution", ctx$line, "reshaped outcome")
     rhs <- fill_template(dist_template(da, "r", ctx), c(da$values, list(like = lhs)))
     return(list(lhs = lhs, rhs = rhs))
   }
@@ -556,24 +585,59 @@ sampling_draw_code <- function(outcome, dist, origin, args, truncation, ctx, imp
   bounds <- truncation
   implicit <- FALSE
   if (is.null(bounds) && transform$kind %in% c("bounds", "positive_ordered")) {
-    bounds <- implicit_truncation(transform, outcome, da, ctx)
+    if (!is.null(aff)) {
+      raw <- list(lower = if (transform$kind == "positive_ordered") list(node = "Int", value = "0", type = list(base = "int", adims = 0L), ad = "DataOnly") else transform$lower,
+                  upper = if (transform$kind == "positive_ordered") NULL else transform$upper)
+      idx <- function(b) if (is.null(b) || type_rank(b$type) == 0 || !identical(ol$target$node, "Index")) b else
+        list(node = "Index", arg = b, indices = ol$target$indices, type = ol$target$type, ad = b$ad)
+      bounds <- affine_bounds(aff, list(lower = idx(raw$lower), upper = idx(raw$upper)), ctx)
+      # drop mapped bounds that are constants equal to the distribution's support
+      at_support <- function(b, sup) {
+        if (is.null(b) || !is.numeric(sup) && is.na(suppressWarnings(as.numeric(sup)))) return(is.null(b))
+        v <- constant_value(translate_expr(b, ctx)$code)
+        !is.na(v) && v == as.numeric(sup)
+      }
+      if (at_support(bounds$lower, da$def$support[1])) bounds$lower <- NULL
+      if (at_support(bounds$upper, da$def$support[2])) bounds$upper <- NULL
+      if (is.null(bounds$lower) && is.null(bounds$upper)) bounds <- NULL
+    } else {
+      bounds <- implicit_truncation(transform, outcome, da, ctx)
+    }
     implicit <- !is.null(bounds)
   }
   rhs <- if (is.null(bounds)) {
     fill_template(dist_template(da, "r", ctx), c(da$values, list(n = n)))
   } else {
     if (implicit) check_implicit_truncation(da, args, bounds, base, ctx)
-    truncated_draw_code(da, bounds, n, ctx)
+    half_draw_code(da, bounds, n, ctx) %||% truncated_draw_code(da, bounds, n, ctx)
   }
   if (transform$kind %in% c("ordered", "positive_ordered")) rhs <- ordered_draw(rhs, args, base, ctx)
   if (transform$kind == "sum_to_zero_vector") rhs <- sum_to_zero_draw(rhs, da, base, ctx)
+  if (!is.null(aff)) rhs <- affine_inverse_code(aff, rhs, ctx)
   # mixture components on a bounded parameter are chosen in proportion to their mass inside the bounds
   log_mass <- if (implicit) truncation_log_mass(da, bounds, ctx) else NULL
   list(lhs = ol$fill, rhs = rhs, log_mass = log_mass)
 }
 
+# "function(q, ...) pnorm(q, mu, sigma, ...), function(p, ...) qnorm(p, mu, sigma, ...)"
+native_cdf_closures <- function(da, with_quantile = TRUE) {
+  cdf <- fill_template(da$def$p, c(da$values, list(y = "q", opts = ", ...")))
+  out <- paste0("function(q, ...) ", cdf)
+  if (with_quantile) out <- paste0(out, ", function(p, ...) ", fill_template(da$def$q, c(da$values, list(p = "p", opts = ", ..."))))
+  out
+}
+
+native_log_mass <- function(da, lower, upper, ctx, register = TRUE) {
+  if (register) ctx_use_helper(ctx, "log_truncated_mass")
+  lo <- if (is.null(lower)) "-Inf" else if (isTRUE(da$def$discrete)) paste0(wrap(translate_expr(lower, ctx), PREC_ADD), " - 1")
+        else translate_expr(lower, ctx)$code
+  hi <- if (is.null(upper)) "Inf" else translate_expr(upper, ctx)$code
+  paste0("log_truncated_mass(", native_cdf_closures(da, with_quantile = FALSE), ", ", lo, ", ", hi, ")")
+}
+
 truncation_log_mass <- function(da, bounds, ctx) {
   if (is.null(da$def$p)) return(NA_character_)
+  if (isTRUE(da$def$p_native)) return(native_log_mass(da, bounds$lower, bounds$upper, ctx, register = FALSE))
   cdf <- function(b) fill_template(da$def$p, c(da$values, list(y = wrap(translate_expr(b, ctx), PREC_ATOM), opts = "")))
   pl <- if (is.null(bounds$lower)) "0" else if (isTRUE(da$def$discrete)) {
     fill_template(da$def$p, c(da$values, list(y = paste0(wrap(translate_expr(bounds$lower, ctx), PREC_ADD), " - 1"), opts = "")))
@@ -589,6 +653,7 @@ component_weight <- function(weight_code, draw, ctx) {
     stan2r_unsupported("mixture component on a bounded parameter whose distribution has no CDF", ctx$line,
                        "mixture on bounded parameter")
   }
+  if (grepl("log_truncated_mass(", draw$log_mass, fixed = TRUE)) ctx_use_helper(ctx, "log_truncated_mass")
   if (identical(weight_code, "0")) draw$log_mass else paste0(weight_code, " + ", draw$log_mass)
 }
 
@@ -646,8 +711,21 @@ check_implicit_truncation <- function(da, args, bounds, base, ctx) {
   if (centred && !bound_ad) return(invisible(NULL))
   ctx$warnings <- c(ctx$warnings, sprintf(paste0(
     "Stan2R: the prior for '%s' (line %d) is truncated by its declared bounds, and the truncation's ",
-    "normalising constant depends on other parameters. Per-statement truncated draws then differ from ",
-    "Stan's joint prior."), base, ctx$line))
+    "normalising constant depends on other parameters. Unless the model divides by that mass itself (as ",
+    "normalised mixture components do), these draws differ from Stan's joint prior."), base, ctx$line))
+}
+
+# a symmetric distribution cut at its centre is a half distribution: abs(draw)
+half_draw_code <- function(da, bounds, n, ctx) {
+  if (!(da$name %in% symmetric_families) || !xor(is.null(bounds$lower), is.null(bounds$upper))) return(NULL)
+  b <- bounds$lower %||% bounds$upper
+  centre <- if (da$name == "std_normal") "0" else da$values$mu$code
+  bcode <- translate_expr(b, ctx)$code
+  if (!identical(bcode, centre)) return(NULL)
+  draw <- fill_template(dist_template(da, "r", ctx), c(da$values, list(n = n)))
+  if (bcode == "0") return(if (is.null(bounds$upper)) paste0("abs(", draw, ")") else paste0("-abs(", draw, ")"))
+  sgn <- if (is.null(bounds$upper)) " + " else " - "
+  paste0(wrap(translate_expr(b, ctx), PREC_ADD), sgn, "abs(", draw, " - ", wrap(translate_expr(b, ctx), PREC_ADD + 1), ")")
 }
 
 truncated_draw_code <- function(da, bounds, n, ctx) {
@@ -662,6 +740,12 @@ truncated_draw_code <- function(da, bounds, n, ctx) {
                   if (is.null(lower)) "-Inf" else lower$code, ", ", if (is.null(upper)) "Inf" else upper$code, ")"))
   }
   ctx_use_helper(ctx, template_helpers(paste(p_tpl, q_tpl), da$def$helpers))
+  if (isTRUE(da$def$p_native)) {
+    ctx_use_helper(ctx, "rtruncated")
+    lo <- if (is.null(lower)) "-Inf" else if (isTRUE(da$def$discrete)) paste0(wrap(lower, PREC_ADD), " - 1") else lower$code
+    return(paste0("rtruncated(", n, ", ", native_cdf_closures(da), ", ", lo, ", ",
+                  if (is.null(upper)) "Inf" else upper$code, ")"))
+  }
   cdf <- function(at) fill_template(p_tpl, c(da$values, list(y = at, opts = "")))
   p_lower <- if (is.null(lower)) NULL else cdf(if (isTRUE(da$def$discrete)) paste0(wrap(lower, PREC_ADD), " - 1") else wrap(lower, PREC_ATOM))
   p_upper <- if (is.null(upper)) NULL else cdf(wrap(upper, PREC_ATOM))
@@ -690,7 +774,14 @@ sum_to_zero_draw <- function(rhs, da, base, ctx) {
   paste0("(function(z) z - mean(z))(", rhs, ")")
 }
 
-sampling_density_code <- function(outcome, dist, origin, suffix, args, truncation, ctx) {
+sampling_density_code <- function(outcome, dist, origin, suffix, args, truncation, ctx, affine = TRUE) {
+  aff <- if (affine) affine_outcome(outcome, ctx) else NULL
+  if (!is.null(aff)) {
+    # density of the variable: density of the expression times |d expression / d variable|
+    d <- sampling_density_code(outcome, dist, origin, suffix, args, truncation, ctx, affine = FALSE)
+    jac <- affine_log_jacobian(aff, ctx)
+    return(if (is.null(jac)) d else paste0(d, " + ", jac))
+  }
   y <- translate_expr(outcome, ctx)
   scalar_outcome <- type_rank(outcome$type) == 0
   if (origin == "UserDefined") {
@@ -710,7 +801,9 @@ sampling_density_code <- function(outcome, dist, origin, suffix, args, truncatio
   d <- fill_template(dist_template(da, "d", ctx), c(da$values, list(y = r_paren(y))))
   if (isTRUE(da$def$multivariate)) return(d)
   if (scalar_outcome && any(vapply(args, function(a) type_rank(a$type) > 0, logical(1)))) d <- paste0("sum(", d, ")")
-  if (!is.null(truncation)) {
+  if (!is.null(truncation) && isTRUE(da$def$p_native)) {
+    d <- paste0(d, " - ", native_log_mass(da, truncation$lower, truncation$upper, ctx))
+  } else if (!is.null(truncation)) {
     p_tpl <- dist_template(da, "p", ctx)
     cdf <- function(at) fill_template(p_tpl, c(da$values, list(y = at, opts = "")))
     lower <- if (!is.null(truncation$lower)) translate_expr(truncation$lower, ctx) else NULL
@@ -751,7 +844,7 @@ tr_other_target <- function(s, ctx, depth, x) {
   i <- ind(depth)
   deps <- expr_vars(x)
   if (identical(x$node, "Call") && x$name == "log_sum_exp" && length(x$args) == 1 && identical(x$args[[1]]$node, "Var") &&
-      !(identical(x$ad, "DataOnly") && !any(deps %in% ctx$observed))) {
+      !(identical(x$ad, "DataOnly") && !any(deps %in% ctx$observed_dependent))) {
     stan2r_unsupported(sprintf(paste0("mixture accumulator '%s' whose elements are not assigned direct density terms ",
                                       "(write lp[k] = log_weight + dist_lpdf(y | ...))"), x$args[[1]]$name),
                        s$line, "mixture accumulator")
@@ -759,11 +852,12 @@ tr_other_target <- function(s, ctx, depth, x) {
   if (length(ir_find(x, is_lp_call))) {
     stan2r_unsupported("density term that is not a single added term of target", s$line, "density inside a larger expression")
   }
-  if (!length(deps) || (identical(x$ad, "DataOnly") && !any(deps %in% ctx$observed))) {
+  if (!length(deps) || (identical(x$ad, "DataOnly") && !any(deps %in% ctx$observed_dependent))) {
     return(paste0(i, "# (constant target increment: ", stan_expr_text(x), ")"))
   }
-  on_observed <- any(deps %in% ctx$observed)
-  if (!on_observed && ctx$posterior) {
+  # a term that uses data may be (part of) the likelihood, so it is only skipped when it uses parameters alone
+  on_data <- any(deps %in% c(ctx$observed_dependent, ctx$data_dependent))
+  if (!on_data && ctx$posterior) {
     return(paste0(i, "# (prior term, fixed by the posterior draw: target += ", stan_expr_text(x), ")"))
   }
   stan2r_unsupported(sprintf("target increment '%s' that is not a density statement", stan_expr_text(x)),
@@ -792,9 +886,11 @@ tr_mixture <- function(s, ctx, depth, x) {
   if (any(vapply(comps, is.null, logical(1)))) {
     stan2r_unsupported(sprintf("%s whose arguments are not all density terms", x$name), s$line, "mixture form")
   }
-  outs <- unique(vapply(comps, function(cm) stan_expr_text(cm$call$args[[1]]), ""))
+  targets <- lapply(comps, function(cm) sampled_target(cm$call$args[[1]], ctx))
+  if (any(vapply(targets, is.null, logical(1)))) stan2r_unsupported("mixture with an expression outcome", s$line, "expression on left of ~")
+  outs <- unique(vapply(targets, stan_expr_text, ""))
   if (length(outs) > 1) stan2r_unsupported("mixture over different outcomes", s$line, "mixture over several outcomes")
-  outcome <- comps[[1]]$call$args[[1]]
+  outcome <- targets[[1]]
   base <- outcome_base(outcome)
   if (is.null(base)) stan2r_unsupported("mixture with an expression outcome", s$line, "expression on left of ~")
   action <- sampling_action(sym_role(ctx, base), ctx)
@@ -993,7 +1089,7 @@ stmt_rw <- function(s, ctx) {
   writes <- character(0)
   local <- character(0)
   lp_writes <- function(x) {
-    outs <- vapply(ir_find(x, is_lp_call), function(cl) outcome_base(cl$args[[1]]) %||% "", "")
+    outs <- vapply(ir_find(x, is_lp_call), function(cl) sampled_base(cl$args[[1]], ctx) %||% "", "")
     outs[outs != "" & vapply(outs, function(o) drawable_role(sym_role(ctx, o)), logical(1))]
   }
   visit <- function(s) {
@@ -1010,7 +1106,7 @@ stmt_rw <- function(s, ctx) {
         writes <<- c(writes, lp_writes(s$rhs))
       },
       Tilde = {
-        b <- outcome_base(s$arg)
+        b <- sampled_base(s$arg, ctx)
         reads <<- c(reads, expr_vars(list(s$args, s$truncation)), setdiff(expr_vars(s$arg), b))
         if (!is.null(b) && drawable_role(sym_role(ctx, b))) writes <<- c(writes, b) else reads <<- c(reads, b)
       },
@@ -1053,10 +1149,19 @@ unit_writes <- function(s, ctx) {
   if (s$node == "Decl") character(0) else w
 }
 
-prior_schedule <- function(units, ctx) {
+# inside loops and blocks, prior draws can also come after statements that use them
+schedule_block <- function(stmts, ctx) {
+  if (ctx$posterior || !is.null(ctx$derived_outcome) || length(stmts) < 2) return(stmts)
+  units <- lapply(stmts, function(s) list(stmt = s, block = "inner"))
+  # observed data keep program order here: sequential models (AR, state space) simulate in that order
+  stmts[prior_schedule(units, ctx, include_observed = FALSE)]
+}
+
+prior_schedule <- function(units, ctx, include_observed = TRUE) {
   n <- length(units)
   rw <- lapply(units, function(u) stmt_rw(u$stmt, ctx))
-  simulated <- c(names(ctx$sym)[vapply(ctx$sym, function(x) x$role == "param", logical(1))], ctx$observed)
+  simulated <- c(names(ctx$sym)[vapply(ctx$sym, function(x) x$role == "param", logical(1))],
+                 if (include_observed) ctx$observed)
   before <- matrix(FALSE, n, n)
   for (i in seq_len(n)) for (j in seq_len(n)) {
     if (i == j) next
@@ -1191,7 +1296,7 @@ accumulator_targets <- function(stmts, node = "TargetPE") {
 }
 
 # accumulators: lp[k] = weight + D_lpdf(y | ...), later reduced by log_sum_exp(lp) or sum(lp)
-find_accumulators <- function(stmts, acc_targets) {
+find_accumulators <- function(stmts, acc_targets, ctx) {
   accs <- list()
   for (acc in names(acc_targets)) {
     sites <- list()
@@ -1202,7 +1307,7 @@ find_accumulators <- function(stmts, acc_targets) {
       }
     })
     if (!length(sites)) next
-    outs <- unique(vapply(sites, function(x) stan_expr_text(x$call$args[[1]]), ""))
+    outs <- unique(vapply(sites, function(x) stan_expr_text(sampled_target(x$call$args[[1]], ctx) %||% x$call$args[[1]]), ""))
     if (length(outs) > 1) {
       stan2r_unsupported(sprintf("accumulator '%s' mixes densities of different outcomes (%s)", acc,
                                  paste(outs, collapse = ", ")), acc_targets[[acc]]$line, "mixture over several outcomes")
@@ -1211,8 +1316,12 @@ find_accumulators <- function(stmts, acc_targets) {
       stan2r_unsupported(sprintf("more than one density term in one assignment to accumulator '%s'", acc),
                          sites[[1]]$stmt$line, "mixture accumulator")
     }
-    accs[[acc]] <- list(reducer = acc_targets[[acc]]$reducer, outcome = sites[[1]]$call$args[[1]],
-                        base = outcome_base(sites[[1]]$call$args[[1]]))
+    target <- sampled_target(sites[[1]]$call$args[[1]], ctx)
+    if (is.null(target)) {
+      stan2r_unsupported(sprintf("accumulator '%s' over an expression that is not a variable", acc),
+                         acc_targets[[acc]]$line, "expression on left of ~")
+    }
+    accs[[acc]] <- list(reducer = acc_targets[[acc]]$reducer, outcome = target, base = outcome_base(target))
   }
   accs
 }
@@ -1231,7 +1340,8 @@ derive_udf_draw <- function(dist, ctx) {
                        ctx$line, "user-defined distribution without _rng")
   }
   y <- def$args[[1]]$name
-  saved <- mget(c("sym", "observed", "accumulators", "sim", "posterior", "derived_outcome", "line"), envir = ctx)
+  saved <- mget(c("sym", "observed", "observed_dependent", "data_dependent", "accumulators", "sim", "posterior",
+                  "derived_outcome", "line"), envir = ctx)
   on.exit(list2env(saved, envir = ctx), add = TRUE)
   args_sym <- lapply(def$args, function(a) list(name = a$name, role = if (a$name == y) "data" else "tdata"))
   names(args_sym) <- vapply(def$args, `[[`, "", "name")
@@ -1241,7 +1351,9 @@ derive_udf_draw <- function(dist, ctx) {
   ctx$posterior <- TRUE
   ctx$derived_outcome <- y
   body_stmts <- if (identical(def$body$node, "Block")) def$body$stmts else list(def$body)
-  ctx$accumulators <- find_accumulators(body_stmts, accumulator_targets(body_stmts, "Return"))
+  ctx$accumulators <- find_accumulators(body_stmts, accumulator_targets(body_stmts, "Return"), ctx)
+  ctx$observed_dependent <- observed_dependent(body_stmts, ctx)
+  ctx$data_dependent <- ctx$observed_dependent
   body <- tryCatch(tr_body(def$body, ctx, 1), stan2r_unsupported = function(e) {
     stan2r_unsupported(sprintf("cannot simulate from user-defined %s_lpdf (no %s_rng()): %s", dist, dist,
                                sub("^Stan2R: unsupported: ", "", conditionMessage(e))),
@@ -1252,4 +1364,35 @@ derive_udf_draw <- function(dist, ctx) {
     sprintf("# draws %s from user-defined %s (derived from its density)", y, paste0(def$name, "()")),
     paste0(fname, " <- function(", paste(args, collapse = ", "), ") {"), body, "}", "")
   fname
+}
+
+# Stan does not add the Jacobian of a left-hand-side transform; when it depends on
+# parameters, Stan's posterior differs from the generative model simulated here
+warn_affine_jacobian <- function(aff, outcome, ctx) {
+  if (is.null(aff$s) || identical(aff$s$ad, "DataOnly")) return(invisible(NULL))
+  ctx$warnings <- c(ctx$warnings, sprintf(paste0(
+    "Stan2R: '%s' (line %d) rescales %s by a parameter-dependent factor; Stan adds no Jacobian for it, so Stan's ",
+    "posterior differs from the generative model simulated here unless the model adds target += log(abs(%s))."),
+    stan_expr_text(outcome), ctx$line, stan_expr_text(aff$target), stan_expr_text(aff$s)))
+}
+
+# variables computed (directly or through other variables) from observed outcomes
+observed_dependent <- function(stmts, ctx, from = ctx$observed) {
+  edges <- list()
+  walk_stmts(stmts, function(s) {
+    if (s$node == "Assign") {
+      b <- outcome_base(s$lhs)
+      edges[[length(edges) + 1]] <<- list(to = b, from = expr_vars(list(s$rhs, s$lhs)))
+    } else if (s$node == "Decl") {
+      for (v in s$vars) if (!is.null(v$init)) edges[[length(edges) + 1]] <<- list(to = v$name, from = expr_vars(v$init))
+    }
+  })
+  dep <- from
+  repeat {
+    new <- unique(unlist(lapply(edges, function(e) if (any(e$from %in% dep)) e$to)))
+    new <- setdiff(new, dep)
+    if (!length(new)) break
+    dep <- c(dep, new)
+  }
+  dep
 }
