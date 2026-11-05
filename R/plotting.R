@@ -1,5 +1,13 @@
 #### plotting functions (used by the example) ####
 
+#' Plotmath labels in scientific notation (used by the example's legends).
+#' @param numbers numbers to label.
+#' @param digits significant digits after the decimal point.
+#' @param pretty pass several numbers through [pretty()] first.
+#' @param scientific use `a x 10^b` labels.
+#' @param exp_scientific exponent from which positive numbers are written in scientific form.
+#' @return list of `values` and plotmath `labels`.
+#' @export
 prettyScientificExpr <- function(numbers, digits = 2, pretty = T, scientific = T, exp_scientific = 4) {
   if(length(numbers) > 1){
     
@@ -41,6 +49,23 @@ prettyScientificExpr <- function(numbers, digits = 2, pretty = T, scientific = T
 
 
 
+#' Draw a continuous colour legend on the current plot (used by the example).
+#' @param colors colours of the scale.
+#' @param labels values that the colours represent.
+#' @param positions positions of `labels` along the scale, in \[0, 1\].
+#' @param n_rect number of rectangles drawn.
+#' @param x,y top-left corner of the legend (user coordinates).
+#' @param h,w height and width of the legend.
+#' @param vertical vertical (TRUE) or horizontal legend.
+#' @param xpd clipping, as in [graphics::par()].
+#' @param n_labels number of tick labels.
+#' @param left_below put labels left of (or below) the scale.
+#' @param log_scale label on a log scale.
+#' @param n_digits significant digits of the labels.
+#' @param pretty round labels with [pretty()].
+#' @param scientific use scientific notation.
+#' @param main legend title.
+#' @export
 add_continuous_legend <- function(colors, labels, positions, n_rect = 100, x = NA, y = NA, h = NA, w = NA, 
                                   vertical = TRUE, xpd = NA, n_labels = 5, 
                                   left_below = TRUE, log_scale = FALSE,

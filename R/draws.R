@@ -7,6 +7,10 @@ draw_columns_pattern <- function(var_name) {
 }
 
 #' Columns of a draws table that belong to one Stan variable.
+#' @param var_name Stan variable name.
+#' @param samps draws table (data frame or data.table) with CmdStan-style column
+#'   names (`theta[1,2]`) or their `data.frame()` form (`theta.1.2.`).
+#' @return a data frame with the matching columns.
 #' @export
 subset_samps <- function(var_name, samps) {
   cols <- grep(draw_columns_pattern(var_name), names(samps), value = TRUE)

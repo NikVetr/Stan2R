@@ -1,3 +1,4 @@
+// from minor_scripts/postdoc/bivariate_correlation_uncertainty_fast_marginalize-out-latents_vectorized.stan
 functions {
   //-- log-pdf for p independent 2-D observations with row-specific diag errors
   real bv_norm_me_lpdf(matrix x,              // p × 2 observed values

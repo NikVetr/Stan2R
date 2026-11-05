@@ -132,6 +132,13 @@
       out <- list(p = p, x_err = x_err, sd_x_err = sd_x_err, df = df, x1_raw = x1_raw,
         x2_raw = x2_raw, sigma_x = sigma_x, r = r, x = x)
 
+# translation of bivariate_corr_marginalized_vectorized.stan
+
+    Code
+      cat(snapshot_text(f, "prior_predictive"))
+    Output
+      ERROR: Stan2R: unsupported: cannot simulate from user-defined bv_norm_me_lpdf (no bv_norm_me_rng()): target increment '-p * log(2 * pi())' that is not a density statement (line 20) (line 40)
+
 # translation of bivariate_correlation_uncertainty_fast.stan
 
     Code
@@ -184,13 +191,6 @@
       
       out <- list(p = p, x_err = x_err, sd_x_err = sd_x_err, x1_raw = x1_raw, x2_raw = x2_raw,
         sigma_x = sigma_x, r = r, x = x)
-
-# translation of bivariate_correlation_uncertainty_fast_marginalize-out-latents_vectorized.stan
-
-    Code
-      cat(snapshot_text(f, "prior_predictive"))
-    Output
-      ERROR: Stan2R: unsupported: cannot simulate from user-defined bv_norm_me_lpdf (no bv_norm_me_rng()): target increment '-p * log(2 * pi())' that is not a density statement (line 19) (line 39)
 
 # translation of causal-recovery.stan
 

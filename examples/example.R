@@ -182,7 +182,7 @@ unobs_vars <- prior_predictive_sim[unobs_var_names]
 post_pred_dists_unobs_vars <- lapply(unobs_var_names, function(uv_name) 
   do.call(rbind, lapply(post_pred_list, function(post_pred_sim) post_pred_sim[[uv_name]])))
 post_pred_mean_unobs_vars <- lapply(unobs_var_names, function(uv_name) apply(post_pred_dists_unobs_vars[[uv_name]], 2, mean))
-post_pred_95q_unobs_vars <- lapply(unobs_var_names, function(uv_name) apply(post_pred_dists_unobs_vars[[uv_name]], 2, quantile, probs = c(0.05, 0.95)))
+post_pred_95q_unobs_vars <- lapply(unobs_var_names, function(uv_name) apply(post_pred_dists_unobs_vars[[uv_name]], 2, quantile, probs = c(0.025, 0.975)))
 
 #now do some plotting
 dim_param_fig <- ceiling(sqrt(length(unobs_vars)))
@@ -249,7 +249,7 @@ dev.off()
 #now do the same for posterior means
 post_pred_dists_outcome <- do.call(rbind, lapply(post_pred_list, function(post_pred_sim) post_pred_sim$x))
 post_pred_mean_outcome <- apply(post_pred_dists_outcome, 2, mean)
-post_pred_95q_outcome <- apply(post_pred_dists_outcome, 2, quantile, probs = c(0.05, 0.95))
+post_pred_95q_outcome <- apply(post_pred_dists_outcome, 2, quantile, probs = c(0.025, 0.975))
 
 post_dens_list <- parallel::mclapply(1:n_samp, function(si){
   mcprint(paste0(si, " "))
@@ -274,7 +274,7 @@ colvals <- viridisLite::cividis(101)
 #and plot it
 png(filename = paste0(stan_figure_dir, "outcome_goodness-of-fit.png"), width = 800, height = 700, pointsize = 16)
 par(mar = c(4,4,4,8))
-plot(dat$x , post_pred_mean_outcome / dat$k, pch = 19, col = colvals[nlppm_col_ind], cex = 0.5, #dat$k / max(dat$k),
+plot(dat$x / dat$k, post_pred_mean_outcome / dat$k, pch = 19, col = colvals[nlppm_col_ind], cex = 0.5, #dat$k / max(dat$k),
      xlim = c(0,1), ylim = c(0,1), xlab = "observed proportion", ylab = "posterior proportion", 
      main = paste0("Pearson's r = ", round(cor(dat$x / dat$k, post_pred_mean_outcome / dat$k), 3)))
 segments(x0 = dat$x / dat$k, x1 = dat$x / dat$k, y0 = post_pred_95q_outcome[1,] / dat$k, y1 = post_pred_95q_outcome[2,] / dat$k, col = colvals[nlppm_col_ind])
