@@ -2,30 +2,30 @@ set.seed(1E6)
 
 #### load packages and functions ####
 library(data.table)
-library(dplyr)
 library(cmdstanr)
 library(posterior)
 
-#set working directory to this repo
-setwd("~/repos/Stan2R/")
-
-#read in functions
-source("R/functions.R")
+#load Stan2R from this repository (run this script from the repository root),
+#or use library(Stan2R) after remotes::install_github("NikVetr/Stan2R")
+pkgload::load_all(".")
+n_cores <- 4
 
 #### load in the Stan model and fitted MCMC output ####
-base_dir <- "~/repos/Stan2R/"
+#outputs go under base_dir; set STAN2R_EXAMPLE_DIR to write them somewhere else
+base_dir <- paste0(Sys.getenv("STAN2R_EXAMPLE_DIR", "."), "/")
 stan_model_dir <- paste0(base_dir, "models/")
 stan_data_dir <- paste0(base_dir, "data/")
 stan_output_dir <- paste0(base_dir, "output/")
 stan_figure_dir <- paste0(base_dir, "figures/")
 stan_mcmc_dir <- paste0(stan_output_dir, "mcmc/")
-stan_progress_dir <- paste0(base_dir, "progress/")
+for (d in c(stan_model_dir, stan_data_dir, stan_figure_dir, stan_mcmc_dir)) dir.create(d, showWarnings = FALSE, recursive = TRUE)
 
 #specify model and data object name
 model_name <- "beta-binomial"
 
 #load in Stan model file
 model_path <- paste0(stan_model_dir, model_name, ".stan")
+if (!file.exists(model_path)) file.copy(file.path("models", paste0(model_name, ".stan")), model_path)
 stan_code <- readLines(model_path) #load stan model spec
 
 #specify input data as list
@@ -117,7 +117,7 @@ post_pred_list <- parallel::mclapply(1:n_samp, function(si){
   out_sim_sim <- stan_sim_env$out
   
   return(out_sim_sim)
-}, mc.cores = 8)
+}, mc.cores = n_cores)
 
 # Initialize calib with the same structure as out_sim but with zeros
 sim_calib <- prior_predictive_sim[names(post_pred_list[[1]])]
@@ -264,7 +264,7 @@ post_dens_list <- parallel::mclapply(1:n_samp, function(si){
   out_sim_sim <- stan_sim_env$out
   
   return(out_sim_sim)
-}, mc.cores = 8)
+}, mc.cores = n_cores)
 post_pred_dens_outcome <- do.call(rbind, lapply(post_dens_list, function(post_pred_dens) post_pred_dens$x))
 nlppm <- log(apply(post_pred_dens_outcome, 2, mean))
 nlppm_col_ind <- nlppm - min(nlppm) 

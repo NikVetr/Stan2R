@@ -1,0 +1,12 @@
+^tmp$
+^data$
+^output$
+^models$
+^figures$
+^examples$
+^AGENTS\.md$
+^AGENTS\.override\.md$
+^\.DS_Store$
+^docs$
+^tests/corpus$
+^tests/gold$
